@@ -59,30 +59,30 @@ class Product_Sync
             <div class="sync-status"></div>
             <div class="sync-progress-container" style="display:none;">
                 <div class="sync-step" data-step="product">
-                    <span class="step-icon">🏷️</span>
+                    <span class="step-icon dashicons dashicons-tag"></span>
                     <span class="step-text">Kreiranje proizvoda...</span>
                     <span class="step-status"></span>
                 </div>
                 <div class="sync-step" data-step="images">
-                    <span class="step-icon">🖼️</span>
+                    <span class="step-icon dashicons dashicons-format-image"></span>
                     <span class="step-text">Upload slika...</span>
                     <span class="step-status"></span>
                 </div>
                 <?php if ($is_variable): ?>
                     <div class="sync-step" data-step="variations">
-                        <span class="step-icon">🔄</span>
+                        <span class="step-icon dashicons dashicons-update"></span>
                         <span class="step-text">Kreiranje varijacija...</span>
                         <span class="step-status"></span>
                     </div>
                 <?php endif; ?>
                 <div class="sync-step" data-step="prices">
-                    <span class="step-icon">💰</span>
+                    <span class="step-icon dashicons dashicons-money-alt"></span>
                     <span class="step-text">Konverzija cena...</span>
                     <span class="step-status"></span>
                 </div>
                 <!-- Korak za stanje -->
                 <div class="sync-step" data-step="stock">
-                    <span class="step-icon">📦</span>
+                    <span class="step-icon dashicons dashicons-archive"></span>
                     <span class="step-text">Ažuriranje stanja...</span>
                     <span class="step-status"></span>
                 </div>

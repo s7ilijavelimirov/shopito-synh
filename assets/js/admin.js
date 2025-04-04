@@ -4,7 +4,35 @@ jQuery(document).ready(function ($) {
         const messageClass = type === 'error' ? 'error' : 'success';
         container.html(`<div class="sync-message ${messageClass}">${message}</div>`);
     };
+    const createProgressBar = (container, steps) => {
+        // Kreiraj kontejner za progress bar
+        const progressWrapper = $('<div class="sync-progress-bar-wrapper"></div>');
+        const progressBar = $('<div class="sync-progress-bar"></div>');
+        const progressText = $('<div class="sync-progress-text">0%</div>');
+        const statusText = $('<div class="sync-status-text">Pripremanje...</div>');
 
+        progressWrapper.append(progressBar);
+        progressWrapper.append(progressText);
+        progressWrapper.append(statusText);
+        container.prepend(progressWrapper);
+
+        return {
+            update: (completedSteps, message) => {
+                const percentage = Math.min(Math.floor((completedSteps / steps) * 100), 100);
+                progressBar.css('width', percentage + '%');
+                progressText.text(percentage + '%');
+
+                if (message) {
+                    statusText.text(message);
+                }
+
+                // Dodaj klasu za animaciju kad se završi
+                if (percentage >= 100) {
+                    progressBar.addClass('completed');
+                }
+            }
+        };
+    };
     function getStatusMessage(response, type) {
         if (response.success) {
             if (type === 'rest') {
@@ -245,7 +273,7 @@ jQuery(document).ready(function ($) {
                     showMessage(statusDiv, response.data.message, 'success');
                     setTimeout(() => {
                         location.reload();
-                    }, 5000);
+                    }, 2000);
                 } else {
                     handleAjaxError(response.data || 'Nepoznata greška', statusDiv);
                 }
@@ -275,6 +303,27 @@ jQuery(document).ready(function ($) {
         progressContainer.show();
         statusDiv.html('');
 
+        const isVariable = button.data('is-variable') === 'true';
+        const totalSteps = isVariable ? 20 : 10; // Povećaj broj koraka
+        const progressIndicator = createProgressBar(progressContainer, totalSteps);
+        let completedSteps = 0;
+        // Dodajemo trenutni update
+        const updateProgress = () => {
+            completedSteps++;
+            progressIndicator.update(completedSteps, "Sinhronizacija u toku...");
+        };
+
+        // Inicijalizacija: prvi korak
+        updateProgress();
+
+        // Dodaj timer za periodično ažuriranje (da korisnik vidi da se nešto dešava)
+        const progressTimer = setInterval(function () {
+            // Povećaj progress malo po malo do 90% (da ne dođe do 100% pre kraja)
+            if (completedSteps < totalSteps * 0.9) {
+                completedSteps++;
+                progressIndicator.update(completedSteps, "Sinhronizacija u toku...");
+            }
+        }, 3000); // Svake 3 sekunde
         // Reset steps
         $('.sync-step').removeClass('active completed error');
         $('.step-status').removeClass('success error');
@@ -291,11 +340,18 @@ jQuery(document).ready(function ($) {
                 product_id: productId
             },
             success: function (response) {
+                clearInterval(progressTimer);
+                progressIndicator.update(totalSteps, "Sinhronizacija završena!");
                 if (response.success) {
+                    progressIndicator.update(totalSteps);
                     // Update progress steps
                     if (response.data.steps) {
                         response.data.steps.forEach(step => {
                             updateSyncProgress(step.name, step.status, step.message);
+                            if (step.status === 'completed') {
+                                completedSteps++;
+                                progressIndicator.update(completedSteps);
+                            }
                         });
                     }
 
@@ -313,6 +369,7 @@ jQuery(document).ready(function ($) {
                 }
             },
             error: function (xhr, status, error) {
+                clearInterval(progressTimer);
                 handleAjaxError(xhr, statusDiv);
             },
             complete: function () {

@@ -23,6 +23,7 @@ class Admin
     public function enqueue_admin_assets($hook)
     {
         if ($hook == 'post-new.php' || $hook == 'post.php' || strpos($hook, 'shopito-sync') !== false) {
+            wp_enqueue_style('dashicons');
             wp_enqueue_style(
                 'shopito-sync-admin',
                 SHOPITO_SYNC_PLUGIN_URL . 'assets/css/admin.css',

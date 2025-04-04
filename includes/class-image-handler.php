@@ -98,7 +98,7 @@ class Image_Handler
                 'Content-Type' => $file_type['type']
             ],
             'body' => $file_content,
-            'timeout' => 60,
+            'timeout' => 120,
             'sslverify' => false
         ]);
 
