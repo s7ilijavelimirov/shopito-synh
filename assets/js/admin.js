@@ -245,7 +245,7 @@ jQuery(document).ready(function ($) {
                     showMessage(statusDiv, response.data.message, 'success');
                     setTimeout(() => {
                         location.reload();
-                    }, 2000);
+                    }, 5000);
                 } else {
                     handleAjaxError(response.data || 'Nepoznata greška', statusDiv);
                 }

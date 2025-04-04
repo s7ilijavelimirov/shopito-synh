@@ -595,7 +595,7 @@ class API_Handler
                     'Content-Type' => 'application/json'
                 ],
                 'body' => json_encode($stock_data),
-                'timeout' => 60,
+                'timeout' => 120,
                 'sslverify' => false
             ], 'PUT');
 
@@ -699,7 +699,7 @@ class API_Handler
                         'Authorization' => 'Basic ' . base64_encode($this->settings['username'] . ':' . $this->settings['password'])
                     ],
                     'body' => json_encode($data),
-                    'timeout' => 60,
+                    'timeout' => 120,
                     'sslverify' => false
                 ], 'PUT');
 
