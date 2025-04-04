@@ -2,7 +2,7 @@
 /*
 Plugin Name: Shopito Sync
 Description: Sinhronizacija proizvoda između dva woocommerce sajta
-Version: 1.2.0
+Version: 1.2.2
 Author: Ilija Velemirov s7Code&Design
 Text Domain: shopito-sync
 Domain Path: /languages
@@ -13,10 +13,9 @@ if (!defined('ABSPATH')) {
 }
 
 // Definišemo konstante
-define('SHOPITO_SYNC_VERSION', '1.2.0');
+define('SHOPITO_SYNC_VERSION', '1.2.2');
 define('SHOPITO_SYNC_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('SHOPITO_SYNC_PLUGIN_URL', plugin_dir_url(__FILE__));
-define('SHOPITO_SYNC_LOGS_ENABLED', true);
 
 // Autoloader za klase
 spl_autoload_register(function ($class) {
@@ -35,6 +34,28 @@ spl_autoload_register(function ($class) {
         require $file;
     }
 });
+
+// Inicijalizacija API handlera i Variation handlera bez cirkularne reference
+function shopito_sync_initialize_handlers()
+{
+    static $initialized = false;
+    static $api_handler = null;
+    static $variation_handler = null;
+
+    if (!$initialized) {
+        $settings = get_option('shopito_sync_settings', []);
+
+        $api_handler = new Shopito_Sync\API_Handler();
+        $variation_handler = new Shopito_Sync\Variation_Handler($settings, $api_handler);
+
+        // Povezujemo handlere nakon inicijalizacije oba
+        $api_handler->set_variation_handler($variation_handler);
+
+        $initialized = true;
+    }
+
+    return ['api_handler' => $api_handler, 'variation_handler' => $variation_handler];
+}
 
 function shopito_sync_check_version()
 {
@@ -63,13 +84,13 @@ function shopito_sync_init()
 
     // Čekamo da se WooCommerce potpuno učita
     add_action('woocommerce_init', function () {
-        // Prvo inicijalizujemo Logger za globalno korišćenje
-        \Shopito_Sync\Logger::get_instance();
-
-        // Inicijalizacija ostalih klasa
+        // Inicijalizacija klasa
         new Shopito_Sync\Admin();
         new Shopito_Sync\Product_Sync();
         new Shopito_Sync\Settings();
+
+        // Inicijalizujemo handlere
+        shopito_sync_initialize_handlers();
     });
 }
 

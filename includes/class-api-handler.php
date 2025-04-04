@@ -23,9 +23,13 @@ class API_Handler
         $this->logger = Logger::get_instance();
 
         // Variation_Handler inicijalizujemo ovde da bismo izbegli cirkularnu referencu
-        $this->variation_handler = new Variation_Handler($this->settings, $this);
+        //$this->variation_handler = new Variation_Handler($this->settings, $this);
     }
-
+    // Setter za variation_handler, poziva se nakon inicijalizacije
+    public function set_variation_handler($variation_handler)
+    {
+        $this->variation_handler = $variation_handler;
+    }
     private function make_api_request($endpoint, $args, $method = 'GET')
     {
         $attempt = 0;
@@ -60,11 +64,12 @@ class API_Handler
                     sleep(10);
                 }
 
-                // Loggujemo response body za bolje debugovanje
+                // Loggujemo detaljne informacije o grešci
+                $body = wp_remote_retrieve_body($response);
                 $this->logger->error("API Error with response code: " . $response_code, [
                     'endpoint' => $endpoint,
                     'method' => $method,
-                    'response' => wp_remote_retrieve_body($response)
+                    'response' => $body
                 ]);
             } else {
                 $this->logger->error("WP_Error: " . $response->get_error_message(), [
@@ -191,7 +196,28 @@ class API_Handler
             return new \WP_Error('sync_error', $e->getMessage());
         }
     }
+    /**
+     * Pronalazi proizvod po imenu na ciljnom sajtu
+     */
+    private function find_product_by_name($name)
+    {
+        if (empty($name)) {
+            return false;
+        }
 
+        $endpoint = $this->build_api_endpoint("products", ['search' => $name]);
+        $response = wp_remote_get($endpoint, ['sslverify' => false, 'timeout' => 30]);
+
+        if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
+            $products = json_decode(wp_remote_retrieve_body($response));
+            if (!empty($products)) {
+                $remote_product = reset($products);
+                return $remote_product->id;
+            }
+        }
+
+        return false;
+    }
     // Ostale funkcije ostaju iste
     private function process_images_in_batch($product)
     {
@@ -227,7 +253,8 @@ class API_Handler
     {
         $product = wc_get_product($product_id);
         if (!$product) {
-            throw new \Exception('Proizvod nije pronađen');
+            $this->logger->error("Proizvod nije pronađen", ['product_id' => $product_id]);
+            return false;
         }
         return $product;
     }
@@ -521,8 +548,7 @@ class API_Handler
         return [];
     }
     /**
-     **
-     * Sinhronizuje samo stanje proizvoda
+     * Unapređeni metod za sinhronizaciju stanja
      * 
      * @param int $product_id ID proizvoda koji treba sinhronizovati
      * @return array|WP_Error Rezultat sinhronizacije
@@ -530,86 +556,51 @@ class API_Handler
     public function sync_product_stock($product_id)
     {
         $steps = [];
-        $logger = Logger::get_instance();
-        $logger->info("Starting stock sync", ['product_id' => $product_id]);
+        $this->logger->info("Starting stock sync", ['product_id' => $product_id]);
 
         try {
-            // 1. Inicijalna provera proizvoda
+            // 1. Validacija proizvoda
             $product = $this->validate_and_prepare_product($product_id);
-
-            // Prvo proveravamo meta polje za ID
-            $existing_product_id = get_post_meta($product_id, '_synced_product_id', true);
-
-            // Ako ne postoji meta, tražimo po SKU
-            if (!$existing_product_id) {
-                $existing_product_id = $this->find_product_by_sku($product->get_sku());
-
-                // Ako smo našli proizvod po SKU, ažuriramo meta podatak
-                if ($existing_product_id) {
-                    update_post_meta($product_id, '_synced_product_id', $existing_product_id);
-                    $logger->info("Found product by SKU, updated meta", [
-                        'sku' => $product->get_sku(),
-                        'target_id' => $existing_product_id
-                    ]);
-                }
+            if (!$product) {
+                throw new \Exception('Proizvod nije pronađen');
             }
 
-            // Provera da li proizvod postoji na ciljnom sajtu
-            if (!$existing_product_id) {
-                // Provera da li postoji proizvod sa istim ID-jem
-                $same_id_exists = $this->check_if_product_exists_by_id($product_id);
+            // 2. Pronalazak proizvoda na ciljnom sajtu koristeći sve moguće metode
+            $target_product_id = $this->find_target_product($product);
 
-                if ($same_id_exists) {
-                    $existing_product_id = $product_id;
-                    update_post_meta($product_id, '_synced_product_id', $existing_product_id);
-                    $logger->info("Found product with same ID, updated meta", [
-                        'product_id' => $product_id
-                    ]);
-                } else {
-                    $logger->error("Product not found on target site", [
-                        'product_id' => $product_id,
-                        'sku' => $product->get_sku()
-                    ]);
-                    throw new \Exception('Proizvod nije pronađen na ciljnom sajtu. Prvo izvršite punu sinhronizaciju.');
-                }
+            if (!$target_product_id) {
+                $this->logger->error("Proizvod nije pronađen na ciljnom sajtu", [
+                    'product_id' => $product_id,
+                    'sku' => $product->get_sku()
+                ]);
+                throw new \Exception('Proizvod nije pronađen na ciljnom sajtu. Prvo izvršite punu sinhronizaciju.');
             }
 
-            // 2. Pripremamo podatke samo za stanje
-            $stock_status = $product->get_stock_status();
-            $manage_stock = $product->get_manage_stock();
-            $stock_quantity = $product->get_stock_quantity();
-
-            $data = [
-                'stock_status' => $stock_status,
-            ];
-
-            if ($manage_stock) {
-                $data['manage_stock'] = true;
-                $data['stock_quantity'] = $stock_quantity;
-            }
-
-            $logger->info("Prepared stock data", [
-                'stock_status' => $stock_status,
-                'manage_stock' => $manage_stock ? 'yes' : 'no',
-                'stock_quantity' => $stock_quantity
+            $this->logger->info("Pronađen proizvod na ciljnom sajtu", [
+                'product_id' => $product_id,
+                'target_id' => $target_product_id
             ]);
 
-            // 3. Slanje na ciljni sajt
-            $endpoint = $this->build_api_endpoint("products/{$existing_product_id}");
-            $logger->info("Sending stock data to API", ['endpoint' => $endpoint]);
+            // 3. Pripremamo podatke samo za stanje
+            $stock_data = $this->prepare_stock_data($product);
+
+            $this->logger->info("Pripremljeni podaci za stanje", $stock_data);
+
+            // 4. Slanje na ciljni sajt
+            $endpoint = $this->build_api_endpoint("products/{$target_product_id}");
+            $this->logger->info("Slanje podataka o stanju", ['endpoint' => $endpoint]);
 
             $response = $this->make_api_request($endpoint, [
                 'headers' => [
-                    'Content-Type' => 'application/json',
-                    'Authorization' => 'Basic ' . base64_encode($this->settings['username'] . ':' . $this->settings['password'])
+                    'Content-Type' => 'application/json'
                 ],
-                'body' => json_encode($data),
+                'body' => json_encode($stock_data),
                 'timeout' => 60,
                 'sslverify' => false
             ], 'PUT');
 
             if (is_wp_error($response)) {
-                $logger->error("API request failed: " . $response->get_error_message());
+                $this->logger->error("API request failed: " . $response->get_error_message());
                 throw new \Exception($response->get_error_message());
             }
 
@@ -618,16 +609,23 @@ class API_Handler
 
             if ($response_code !== 200) {
                 $error_msg = $this->get_error_message($body, $response_code);
-                $logger->error("API response error: " . $error_msg);
+                $this->logger->error("API response error: " . $error_msg);
                 throw new \Exception($error_msg);
             }
 
-            $logger->success("Stock data sent successfully", ['target_id' => $existing_product_id]);
+            // Zapamtimo ID proizvoda na ciljnom sajtu za buduće sinhronizacije
+            update_post_meta($product_id, '_synced_product_id', $target_product_id);
+            update_post_meta($product_id, '_last_stock_sync_date', current_time('mysql'));
 
-            // 4. Sinhronizacija varijacija ako je potrebno
+            $this->logger->success("Stock data sent successfully", [
+                'product_id' => $product_id,
+                'target_id' => $target_product_id
+            ]);
+
+            // 5. Sinhronizacija varijacija ako je potrebno
             if ($product->get_type() === 'variable') {
                 $steps[] = ['name' => 'variations', 'status' => 'active', 'message' => 'Ažuriranje stanja varijacija...'];
-                $variation_result = $this->sync_variations_stock($product, $existing_product_id);
+                $variation_result = $this->sync_variations_stock($product, $target_product_id);
                 $steps[] = $variation_result;
             }
 
@@ -637,18 +635,13 @@ class API_Handler
                 'message' => 'Stanje proizvoda sinhronizovano'
             ];
 
-            $logger->success("Stock sync completed successfully", [
-                'product_id' => $product_id,
-                'target_id' => $existing_product_id
-            ]);
-
             return [
                 'success' => true,
                 'action' => 'stock_updated',
                 'steps' => $steps
             ];
         } catch (\Exception $e) {
-            $logger->error("Stock sync error: " . $e->getMessage());
+            $this->logger->error("Stock sync error: " . $e->getMessage());
             return new \WP_Error('sync_error', $e->getMessage());
         }
     }
@@ -729,18 +722,96 @@ class API_Handler
         }
     }
     /**
-     * Proverava da li proizvod sa istim ID-jem postoji na ciljnom sajtu
+     * Priprema podatke o stanju proizvoda
+     * 
+     * @param WC_Product $product Proizvod
+     * @return array Podaci o stanju proizvoda
+     */
+    private function prepare_stock_data($product)
+    {
+        $stock_status = $product->get_stock_status();
+        $manage_stock = $product->get_manage_stock();
+        $stock_quantity = $product->get_stock_quantity();
+
+        $data = [
+            'stock_status' => $stock_status,
+        ];
+
+        if ($manage_stock) {
+            $data['manage_stock'] = true;
+            $data['stock_quantity'] = $stock_quantity;
+        }
+
+        return $data;
+    }
+    /**
+     * Traži proizvod na ciljnom sajtu koristeći sve dostupne metode
+     * 
+     * @param WC_Product $product Proizvod
+     * @return int|false ID proizvoda na ciljnom sajtu ili false ako nije pronađen
+     */
+    private function find_target_product($product)
+    {
+        // 1. Prvo pokušamo sa meta podatkom
+        $target_id = get_post_meta($product->get_id(), '_synced_product_id', true);
+        if ($target_id) {
+            // Proverimo da li proizvod još uvek postoji na ciljnom sajtu
+            if ($this->check_if_product_exists_by_id($target_id)) {
+                $this->logger->info("Proizvod pronađen preko meta podataka", [
+                    'product_id' => $product->get_id(),
+                    'target_id' => $target_id
+                ]);
+                return $target_id;
+            }
+        }
+
+        // 2. Pokušamo sa istim ID-jem
+        if ($this->check_if_product_exists_by_id($product->get_id())) {
+            $this->logger->info("Proizvod pronađen sa istim ID-jem", [
+                'product_id' => $product->get_id(),
+            ]);
+            update_post_meta($product->get_id(), '_synced_product_id', $product->get_id());
+            return $product->get_id();
+        }
+
+        // 3. Pokušamo sa SKU
+        $sku = $product->get_sku();
+        if (!empty($sku)) {
+            $target_id = $this->find_product_by_sku($sku);
+            if ($target_id) {
+                $this->logger->info("Proizvod pronađen preko SKU", [
+                    'product_id' => $product->get_id(),
+                    'sku' => $sku,
+                    'target_id' => $target_id
+                ]);
+                update_post_meta($product->get_id(), '_synced_product_id', $target_id);
+                return $target_id;
+            }
+        }
+
+        // 4. Pokušamo sa imenom proizvoda kao zadnju opciju
+        $target_id = $this->find_product_by_name($product->get_name());
+        if ($target_id) {
+            $this->logger->info("Proizvod pronađen preko imena", [
+                'product_id' => $product->get_id(),
+                'name' => $product->get_name(),
+                'target_id' => $target_id
+            ]);
+            update_post_meta($product->get_id(), '_synced_product_id', $target_id);
+            return $target_id;
+        }
+
+        return false;
+    }
+    /**
+     * Proverava da li proizvod sa datim ID-jem postoji na ciljnom sajtu
      */
     private function check_if_product_exists_by_id($product_id)
     {
         $endpoint = $this->build_api_endpoint("products/{$product_id}");
-        $response = wp_remote_get($endpoint, ['sslverify' => false]);
+        $response = wp_remote_get($endpoint, ['sslverify' => false, 'timeout' => 30]);
 
-        if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
-            return true;
-        }
-
-        return false;
+        return !is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200;
     }
     /**
      * Pronalazi proizvod po SKU na ciljnom sajtu
@@ -752,7 +823,7 @@ class API_Handler
         }
 
         $endpoint = $this->build_api_endpoint("products", ['sku' => $sku]);
-        $response = wp_remote_get($endpoint, ['sslverify' => false]);
+        $response = wp_remote_get($endpoint, ['sslverify' => false, 'timeout' => 30]);
 
         if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
             $products = json_decode(wp_remote_retrieve_body($response));

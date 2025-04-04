@@ -1,10 +1,10 @@
 jQuery(document).ready(function ($) {
-    // Utility funkcije (ostaju iste)
+    // Utility funkcije
     const showMessage = (container, message, type) => {
         const messageClass = type === 'error' ? 'error' : 'success';
         container.html(`<div class="sync-message ${messageClass}">${message}</div>`);
     };
-    
+
     function getStatusMessage(response, type) {
         if (response.success) {
             if (type === 'rest') {
@@ -36,7 +36,7 @@ jQuery(document).ready(function ($) {
             }
         }
     }
-    
+
     const updateSyncProgress = (step, status = 'active', message = '') => {
         const container = $('.sync-progress-container');
         const stepElement = container.find(`[data-step="${step}"]`);
@@ -87,7 +87,7 @@ jQuery(document).ready(function ($) {
         showMessage(statusDiv, errorMessage, 'error');
     };
 
-    // Nova funkcija za testiranje konekcije
+    // Funkcija za testiranje konekcije
     function testConnection(type) {
         const resultDiv = $('#connection-result');
         const spinner = $('.spinner');
@@ -171,7 +171,8 @@ jQuery(document).ready(function ($) {
             }
         });
     }
-    // Event handleri za nova dugmad
+
+    // Event handleri za test dugmad
     $('#test-rest-api').on('click', function () {
         testConnection('rest');
     });
@@ -179,9 +180,9 @@ jQuery(document).ready(function ($) {
     $('#test-user-auth').on('click', function () {
         testConnection('user');
     });
-    
+
     // Sinhronizacija stanja proizvoda
-    $('.shopito-sync-stock').on('click', async function (e) {
+    $('.shopito-sync-stock').on('click', function (e) {
         e.preventDefault();
         const button = $(this);
         const productId = button.data('product-id');
@@ -190,74 +191,77 @@ jQuery(document).ready(function ($) {
         const spinnerDiv = button.find('.spinner');
         const progressContainer = $('.sync-progress-container');
 
-        try {
-            // Reset UI
-            button.prop('disabled', true);
-            spinnerDiv.addClass('is-active');
-            progressContainer.show();
+        // Reset UI
+        button.prop('disabled', true);
+        spinnerDiv.addClass('is-active');
+        progressContainer.show();
+        statusDiv.html('');
 
-            // Reset steps and hide all
-            $('.sync-step').removeClass('active completed error').hide();
-            $('.step-status').removeClass('success error');
+        // Reset steps and hide all
+        $('.sync-step').removeClass('active completed error').hide();
+        $('.step-status').removeClass('success error');
 
-            // Prikazujemo samo korake relevantne za sinhronizaciju stanja
-            $('.sync-step[data-step="stock"]').show();
+        // Prikazujemo samo korake relevantne za sinhronizaciju stanja
+        $('.sync-step[data-step="stock"]').show();
 
-            // Za varijabilne proizvode, prikazujemo poseban korak za varijacije sa prilagođenim tekstom
-            if (isVariable) {
-                $('.sync-step[data-step="variations"]').show();
-                // Prilagođeni tekst za ažuriranje varijacija
-                updateSyncProgress('variations', 'active', 'Ažuriranje stanja varijacija...');
-            }
-
-            // Inicijalno stanje - koristimo stock korak
-            updateSyncProgress('stock', 'active', 'Ažuriranje stanja proizvoda...');
-
-            const response = await $.ajax({
-                url: shopitoSync.ajax_url,
-                type: 'POST',
-                data: {
-                    action: 'sync_stock_to_ba',
-                    nonce: shopitoSync.nonce,
-                    product_id: productId
-                }
-            });
-
-            if (response.success) {
-                // Procesuiramo korake iz odgovora
-                if (response.data.steps && response.data.steps.length > 0) {
-                    response.data.steps.forEach(step => {
-                        // Prikažemo samo korake za stock i variations (za varijabilne proizvode)
-                        if (step.name === 'stock' || (isVariable && step.name === 'variations')) {
-                            const stepElement = $(`.sync-step[data-step="${step.name}"]`);
-                            if (stepElement.length) {
-                                stepElement.show();
-                                updateSyncProgress(step.name, step.status, step.message);
-                            }
-                        }
-                    });
-                }
-
-                // Uvek ažuriramo stock korak na kraju
-                updateSyncProgress('stock', 'completed', 'Stanje proizvoda ažurirano');
-
-                showMessage(statusDiv, response.data.message, 'success');
-                setTimeout(() => {
-                    location.reload();
-                }, 2000);
-            } else {
-                throw new Error(response.data || 'Nepoznata greška');
-            }
-        } catch (error) {
-            handleAjaxError(error, statusDiv);
-        } finally {
-            button.prop('disabled', false);
-            spinnerDiv.removeClass('is-active');
+        // Za varijabilne proizvode, prikazujemo poseban korak za varijacije
+        if (isVariable) {
+            $('.sync-step[data-step="variations"]').show();
+            updateSyncProgress('variations', 'active', 'Ažuriranje stanja varijacija...');
         }
+
+        // Inicijalno stanje - koristimo stock korak
+        updateSyncProgress('stock', 'active', 'Ažuriranje stanja proizvoda...');
+
+        $.ajax({
+            url: shopitoSync.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'sync_stock_to_ba',
+                nonce: shopitoSync.nonce,
+                product_id: productId
+            },
+            success: function (response) {
+                if (response.success) {
+                    // Procesuiramo korake iz odgovora
+                    if (response.data.steps && response.data.steps.length > 0) {
+                        response.data.steps.forEach(step => {
+                            // Prikažemo samo korake za stock i variations (za varijabilne proizvode)
+                            if (step.name === 'stock' || (isVariable && step.name === 'variations')) {
+                                const stepElement = $(`.sync-step[data-step="${step.name}"]`);
+                                if (stepElement.length) {
+                                    stepElement.show();
+                                    updateSyncProgress(step.name, step.status, step.message);
+                                }
+                            }
+                        });
+                    }
+
+                    // Uvek ažuriramo stock korak na kraju ako nije već ažuriran
+                    if (!$('.sync-step[data-step="stock"]').hasClass('completed')) {
+                        updateSyncProgress('stock', 'completed', 'Stanje proizvoda ažurirano');
+                    }
+
+                    showMessage(statusDiv, response.data.message, 'success');
+                    setTimeout(() => {
+                        location.reload();
+                    }, 2000);
+                } else {
+                    handleAjaxError(response.data || 'Nepoznata greška', statusDiv);
+                }
+            },
+            error: function (xhr, status, error) {
+                handleAjaxError(xhr, statusDiv);
+            },
+            complete: function () {
+                button.prop('disabled', false);
+                spinnerDiv.removeClass('is-active');
+            }
+        });
     });
-    
-    // Sinhronizacija proizvoda
-    $('.shopito-sync-now').on('click', async function (e) {
+
+    // Puna sinhronizacija proizvoda
+    $('.shopito-sync-now').on('click', function (e) {
         e.preventDefault();
         const button = $(this);
         const productId = button.data('product-id');
@@ -265,54 +269,88 @@ jQuery(document).ready(function ($) {
         const spinnerDiv = button.find('.spinner');
         const progressContainer = $('.sync-progress-container');
 
-        try {
-            // Reset UI
-            button.prop('disabled', true);
-            spinnerDiv.addClass('is-active');
-            progressContainer.show();
+        // Reset UI
+        button.prop('disabled', true);
+        spinnerDiv.addClass('is-active');
+        progressContainer.show();
+        statusDiv.html('');
 
-            // Reset steps
-            $('.sync-step').removeClass('active completed error');
-            $('.step-status').removeClass('success error');
+        // Reset steps
+        $('.sync-step').removeClass('active completed error');
+        $('.step-status').removeClass('success error');
 
-            // VAŽNA IZMENA: Prikazujemo sve korake za punu sinhronizaciju
-            $('.sync-step').show();
+        // Prikazujemo sve korake za punu sinhronizaciju
+        $('.sync-step').show();
 
-            const response = await $.ajax({
+        $.ajax({
+            url: shopitoSync.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'sync_to_ba',
+                nonce: shopitoSync.nonce,
+                product_id: productId
+            },
+            success: function (response) {
+                if (response.success) {
+                    // Update progress steps
+                    if (response.data.steps) {
+                        response.data.steps.forEach(step => {
+                            updateSyncProgress(step.name, step.status, step.message);
+                        });
+                    }
+
+                    // Osiguravamo da je korak za stanje vidljiv i označen kao završen
+                    if (!$('.sync-step[data-step="stock"]').hasClass('completed')) {
+                        updateSyncProgress('stock', 'completed', 'Stanje proizvoda ažurirano');
+                    }
+
+                    showMessage(statusDiv, response.data.message, 'success');
+                    setTimeout(() => {
+                        location.reload();
+                    }, 2000);
+                } else {
+                    handleAjaxError(response.data || 'Nepoznata greška', statusDiv);
+                }
+            },
+            error: function (xhr, status, error) {
+                handleAjaxError(xhr, statusDiv);
+            },
+            complete: function () {
+                button.prop('disabled', false);
+                spinnerDiv.removeClass('is-active');
+            }
+        });
+    });
+
+    // Brisanje logova na stranici logova
+    $('#clear-logs').on('click', function () {
+        if (confirm('Da li ste sigurni da želite da obrišete sve logove?')) {
+            var nonce = $(this).data('nonce');
+
+            $.ajax({
                 url: shopitoSync.ajax_url,
                 type: 'POST',
                 data: {
-                    action: 'sync_to_ba',
-                    nonce: shopitoSync.nonce,
-                    product_id: productId
+                    action: 'clear_shopito_logs',
+                    nonce: nonce
+                },
+                beforeSend: function () {
+                    $('#clear-logs').prop('disabled', true);
+                },
+                success: function (response) {
+                    if (response.success) {
+                        location.reload();
+                    } else {
+                        alert('Greška: ' + response.data);
+                    }
+                },
+                error: function () {
+                    alert('Došlo je do greške prilikom brisanja logova.');
+                },
+                complete: function () {
+                    $('#clear-logs').prop('disabled', false);
                 }
             });
-
-            if (response.success) {
-                // Update progress steps
-                if (response.data.steps) {
-                    response.data.steps.forEach(step => {
-                        updateSyncProgress(step.name, step.status, step.message);
-                    });
-                }
-
-                // Osiguravamo da je korak za stanje vidljiv i označen kao završen
-                if (!response.data.steps || !response.data.steps.find(s => s.name === 'stock')) {
-                    updateSyncProgress('stock', 'completed', 'Stanje proizvoda ažurirano');
-                }
-
-                showMessage(statusDiv, response.data.message, 'success');
-                setTimeout(() => {
-                    location.reload();
-                }, 2000);
-            } else {
-                throw new Error(response.data || 'Nepoznata greška');
-            }
-        } catch (error) {
-            handleAjaxError(error, statusDiv);
-        } finally {
-            button.prop('disabled', false);
-            spinnerDiv.removeClass('is-active');
         }
     });
 });

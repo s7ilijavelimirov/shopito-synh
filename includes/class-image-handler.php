@@ -6,16 +6,17 @@ class Image_Handler
 {
     private $settings;
     private $image_cache = [];
-
-    private function log($message)
-    {
-        error_log("📸 Shopito Sync: " . $message);
-    }
+    private $logger;
 
     public function __construct($settings)
     {
         $this->settings = $settings;
-        // Inicijalizujemo keš samo jednom
+        $this->logger = Logger::get_instance();
+    }
+
+    private function log($message, $level = 'info', $context = [])
+    {
+        $this->logger->log($message, $level, $context);
     }
 
     private function check_image_exists_by_name($filename)
@@ -61,7 +62,7 @@ class Image_Handler
         return false;
     }
 
-    public  function upload_image($image_url)
+    public function upload_image($image_url)
     {
         if (empty($image_url)) {
             return false;
@@ -72,12 +73,14 @@ class Image_Handler
         // Prvo proverimo da li slika već postoji
         $existing_id = $this->check_image_exists_by_name($filename);
         if ($existing_id) {
+            $this->log("Slika već postoji na ciljnom sajtu: {$filename}", 'info', ['existing_id' => $existing_id]);
             return $existing_id;
         }
 
         // Preuzimanje slike
         $temp_file = download_url($image_url);
         if (is_wp_error($temp_file)) {
+            $this->log("Greška pri preuzimanju slike: {$filename}", 'error', ['error' => $temp_file->get_error_message()]);
             return false;
         }
 
@@ -102,9 +105,13 @@ class Image_Handler
         if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 201) {
             $media = json_decode(wp_remote_retrieve_body($response));
             if (isset($media->id)) {
-                $this->image_cache[$filename] = $media->id; // Menjamo filename_cache u image_cache
+                $this->image_cache[$filename] = $media->id;
+                $this->log("Uspešno otpremljena slika: {$filename}", 'success', ['media_id' => $media->id]);
                 return $media->id;
             }
+        } else {
+            $error_message = is_wp_error($response) ? $response->get_error_message() : wp_remote_retrieve_response_code($response);
+            $this->log("Greška pri otpremanju slike: {$filename}", 'error', ['error' => $error_message]);
         }
 
         return false;

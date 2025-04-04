@@ -3,20 +3,25 @@
 namespace Shopito_Sync;
 
 use DateTime;
-use Exception;  // Dodajemo ovo
+use Exception;
+
 class Product_Sync
 {
     private $api_handler;
+    private $logger;
 
     public function __construct()
     {
-        $this->api_handler = new API_Handler();
+        // Dobavljamo API Handler iz globalne funkcije
+        $handlers = shopito_sync_initialize_handlers();
+        $this->api_handler = $handlers['api_handler'];
+        $this->logger = Logger::get_instance();
+
         add_action('wp_ajax_sync_to_ba', array($this, 'handle_sync_request'));
-
         add_action('wp_ajax_sync_stock_to_ba', array($this, 'handle_stock_sync_request'));
-
         add_action('add_meta_boxes', array($this, 'add_sync_meta_box'));
     }
+
     public function add_sync_meta_box()
     {
         add_meta_box(
@@ -75,7 +80,7 @@ class Product_Sync
                     <span class="step-text">Konverzija cena...</span>
                     <span class="step-status"></span>
                 </div>
-                <!-- Novi korak za stanje -->
+                <!-- Korak za stanje -->
                 <div class="sync-step" data-step="stock">
                     <span class="step-icon">📦</span>
                     <span class="step-text">Ažuriranje stanja...</span>
@@ -114,6 +119,7 @@ class Product_Sync
         </div>
 <?php
     }
+
     public function handle_stock_sync_request()
     {
         check_ajax_referer('shopito_sync_nonce', 'nonce');
@@ -131,21 +137,36 @@ class Product_Sync
                 return;
             }
 
+            $this->logger->info("Započeta sinhronizacija stanja proizvoda", [
+                'product_id' => $product_id,
+                'product_name' => $product->get_name(),
+                'product_sku' => $product->get_sku()
+            ]);
+
             $result = $this->api_handler->sync_product_stock($product_id);
 
             if (is_wp_error($result)) {
+                $this->logger->error("Greška pri sinhronizaciji stanja", [
+                    'product_id' => $product_id,
+                    'error' => $result->get_error_message()
+                ]);
                 wp_send_json_error($result->get_error_message());
                 return;
             }
 
             if (!isset($result['success']) || !$result['success']) {
+                $this->logger->error("Sinhronizacija stanja nije uspela", ['product_id' => $product_id]);
                 wp_send_json_error('Sinhronizacija stanja nije uspela');
                 return;
             }
 
             $current_time = current_time('mysql');
-
             update_post_meta($product_id, '_last_stock_sync_date', $current_time);
+
+            $this->logger->success("Stanje proizvoda uspešno sinhronizovano", [
+                'product_id' => $product_id,
+                'sync_date' => $current_time
+            ]);
 
             $response = [
                 'message' => 'Stanje proizvoda je uspešno sinhronizovano',
@@ -155,9 +176,14 @@ class Product_Sync
 
             wp_send_json_success($response);
         } catch (Exception $e) {
+            $this->logger->error("Izuzetak pri sinhronizaciji stanja", [
+                'product_id' => $product_id,
+                'exception' => $e->getMessage()
+            ]);
             wp_send_json_error('Greška: ' . $e->getMessage());
         }
     }
+
     public function handle_sync_request()
     {
         check_ajax_referer('shopito_sync_nonce', 'nonce');
@@ -175,14 +201,25 @@ class Product_Sync
                 return;
             }
 
+            $this->logger->info("Započeta puna sinhronizacija proizvoda", [
+                'product_id' => $product_id,
+                'product_name' => $product->get_name(),
+                'product_sku' => $product->get_sku()
+            ]);
+
             $result = $this->api_handler->sync_product($product_id);
 
             if (is_wp_error($result)) {
+                $this->logger->error("Greška pri punoj sinhronizaciji", [
+                    'product_id' => $product_id,
+                    'error' => $result->get_error_message()
+                ]);
                 wp_send_json_error($result->get_error_message());
                 return;
             }
 
             if (!isset($result['success']) || !$result['success']) {
+                $this->logger->error("Puna sinhronizacija nije uspela", ['product_id' => $product_id]);
                 wp_send_json_error('Sinhronizacija nije uspela');
                 return;
             }
@@ -190,6 +227,12 @@ class Product_Sync
             $current_time = current_time('mysql');
             update_post_meta($product_id, '_shopito_synced', $current_time);
             update_post_meta($product_id, '_last_sync_date', $current_time);
+
+            $this->logger->success("Proizvod uspešno sinhronizovan", [
+                'product_id' => $product_id,
+                'action' => $result['action'],
+                'sync_date' => $current_time
+            ]);
 
             $steps = isset($result['steps']) ? $result['steps'] : [];
             $default_steps = [
@@ -217,6 +260,10 @@ class Product_Sync
 
             wp_send_json_success($response);
         } catch (Exception $e) {
+            $this->logger->error("Izuzetak pri punoj sinhronizaciji", [
+                'product_id' => $product_id,
+                'exception' => $e->getMessage()
+            ]);
             wp_send_json_error('Greška: ' . $e->getMessage());
         }
     }

@@ -7,25 +7,37 @@ class Variation_Handler
     private $settings;
     private $api_handler;
     private $image_handler;
+    private $logger;
 
     public function __construct($settings, $api_handler)
     {
         $this->settings = $settings;
         $this->api_handler = $api_handler;
         $this->image_handler = new Image_Handler($settings);
+        $this->logger = Logger::get_instance();
     }
 
-    private function log($message, $context = [])
+    /**
+     * Logging metoda koja proverava da li je logovanje omogućeno
+     */
+    private function log($message, $context = [], $level = 'info')
     {
-        // error_log("🔄 Shopito Sync: " . $message . ($context ? " | " . json_encode($context) : ""));
+        $this->logger->log($message, $level, $context);
     }
 
     public function sync_variations($product_id, $target_product_id)
     {
-        //$this->log("Sinhronizacija varijacija", ['source' => $product_id, 'target' => $target_product_id]);
+        $this->log("Započeta sinhronizacija varijacija", [
+            'source' => $product_id,
+            'target' => $target_product_id
+        ]);
 
         $product = wc_get_product($product_id);
         if (!$product || $product->get_type() !== 'variable') {
+            $this->log("Proizvod nije varijabilnog tipa", [
+                'product_id' => $product_id,
+                'type' => $product ? $product->get_type() : 'null'
+            ], 'error');
             return false;
         }
 
@@ -33,12 +45,21 @@ class Variation_Handler
             !$this->generate_variations($target_product_id) ||
             !$this->wait_for_variations_generation($target_product_id)
         ) {
+            $this->log("Neuspela generacija varijacija", [
+                'target_product_id' => $target_product_id
+            ], 'error');
             return false;
         }
 
         $target_variations = $this->get_all_target_variations($target_product_id);
         $source_variations = $this->get_source_variations($product);
 
+        $this->log("Pronađeno varijacija", [
+            'target_count' => count($target_variations),
+            'source_count' => count($source_variations)
+        ]);
+
+        $matched_count = 0;
         foreach ($target_variations as $target_variation) {
             $matching_variation = $this->find_matching_source_variation(
                 $target_variation,
@@ -46,13 +67,23 @@ class Variation_Handler
             );
 
             if ($matching_variation) {
+                $matched_count++;
                 $this->update_matched_variation(
                     $matching_variation['data'],
                     $target_variation,
                     $target_product_id
                 );
+
+                // Sačuvamo ID varijacije na ciljnom sajtu za buduće sinhronizacije
+                update_post_meta($matching_variation['variation_id'], '_synced_variation_id', $target_variation->id);
             }
         }
+
+        $this->log("Sinhronizacija varijacija završena", [
+            'product_id' => $product_id,
+            'target_product_id' => $target_product_id,
+            'matched_variations' => $matched_count
+        ], 'success');
 
         return true;
     }
@@ -79,7 +110,14 @@ class Variation_Handler
     private function update_matched_variation($variation_obj, $target_variation, $target_product_id)
     {
         $variation_data = $this->prepare_variation_data($variation_obj, $target_variation);
-        $this->update_variation_data($target_product_id, $target_variation->id, $variation_data);
+        $result = $this->update_variation_data($target_product_id, $target_variation->id, $variation_data);
+
+        if ($result) {
+            $this->log("Varijacija uspešno ažurirana", [
+                'variation_id' => $variation_obj->get_id(),
+                'target_variation_id' => $target_variation->id
+            ], 'success');
+        }
     }
 
     private function prepare_variation_data($variation_obj, $target_variation)
@@ -181,6 +219,11 @@ class Variation_Handler
                 'wp-json/wc/v3/products/' . $target_product_id . '/variations/generate'
         );
 
+        $this->log("Generisanje varijacija", [
+            'target_product_id' => $target_product_id,
+            'endpoint' => $endpoint
+        ]);
+
         $response = wp_remote_post($endpoint, [
             'method' => 'POST',
             'headers' => ['Content-Type' => 'application/json'],
@@ -189,8 +232,29 @@ class Variation_Handler
             'sslverify' => false
         ]);
 
-        return !is_wp_error($response) &&
-            in_array(wp_remote_retrieve_response_code($response), [200, 201]);
+        if (is_wp_error($response)) {
+            $this->log("Greška pri generisanju varijacija", [
+                'target_product_id' => $target_product_id,
+                'error' => $response->get_error_message()
+            ], 'error');
+            return false;
+        }
+
+        $response_code = wp_remote_retrieve_response_code($response);
+        if (!in_array($response_code, [200, 201])) {
+            $this->log("API greška pri generisanju varijacija", [
+                'target_product_id' => $target_product_id,
+                'response_code' => $response_code,
+                'response' => wp_remote_retrieve_body($response)
+            ], 'error');
+            return false;
+        }
+
+        $this->log("Varijacije uspešno generisane", [
+            'target_product_id' => $target_product_id
+        ], 'success');
+
+        return true;
     }
 
     private function get_all_target_variations($product_id)
@@ -205,15 +269,54 @@ class Variation_Handler
                 "wp-json/wc/v3/products/{$product_id}/variations"
         );
 
-        $response = wp_remote_get($endpoint, ['sslverify' => false]);
-        if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
-            return json_decode(wp_remote_retrieve_body($response));
+        $this->log("Dobavljanje varijacija sa ciljnog sajta", [
+            'product_id' => $product_id
+        ]);
+
+        $response = wp_remote_get($endpoint, ['sslverify' => false, 'timeout' => 30]);
+
+        if (is_wp_error($response)) {
+            $this->log("Greška pri dobavljanju varijacija", [
+                'product_id' => $product_id,
+                'error' => $response->get_error_message()
+            ], 'error');
+            return [];
         }
-        return [];
+
+        $response_code = wp_remote_retrieve_response_code($response);
+        if ($response_code !== 200) {
+            $this->log("API greška pri dobavljanju varijacija", [
+                'product_id' => $product_id,
+                'response_code' => $response_code,
+                'response' => wp_remote_retrieve_body($response)
+            ], 'error');
+            return [];
+        }
+
+        $variations = json_decode(wp_remote_retrieve_body($response));
+        $this->log("Uspešno dobavljene varijacije", [
+            'product_id' => $product_id,
+            'count' => count($variations)
+        ], 'success');
+
+        return $variations;
     }
 
     private function find_matching_source_variation($target_variation, $source_variations)
     {
+        // Prvo pokušamo da nađemo varijantu koja je već sinhronizovana sa ovom ciljnom varijantom
+        foreach ($source_variations as $source_variation) {
+            $synced_id = get_post_meta($source_variation['variation_id'], '_synced_variation_id', true);
+            if ($synced_id && $synced_id == $target_variation->id) {
+                $this->log("Pronađena prethodno sinhronizovana varijacija", [
+                    'source_id' => $source_variation['variation_id'],
+                    'target_id' => $target_variation->id
+                ]);
+                return $source_variation;
+            }
+        }
+
+        // Pokušamo sa podudaranjem atributa
         foreach ($source_variations as $source_variation) {
             $matches = true;
 
@@ -239,9 +342,32 @@ class Variation_Handler
             }
 
             if ($matches) {
+                $this->log("Pronađena varijacija po atributima", [
+                    'source_id' => $source_variation['variation_id'],
+                    'target_id' => $target_variation->id
+                ]);
                 return $source_variation;
             }
         }
+
+        // Pokušamo sa podudaranjem SKU-a
+        if (!empty($target_variation->sku)) {
+            foreach ($source_variations as $source_variation) {
+                $source_sku = $source_variation['data']->get_sku();
+                if (!empty($source_sku) && $source_sku === $target_variation->sku) {
+                    $this->log("Pronađena varijacija po SKU", [
+                        'source_id' => $source_variation['variation_id'],
+                        'target_id' => $target_variation->id,
+                        'sku' => $source_sku
+                    ]);
+                    return $source_variation;
+                }
+            }
+        }
+
+        $this->log("Nije pronađena odgovarajuća varijacija", [
+            'target_id' => $target_variation->id
+        ], 'warning');
 
         return null;
     }
@@ -257,6 +383,11 @@ class Variation_Handler
                 "wp-json/wc/v3/products/{$product_id}/variations/{$variation_id}"
         );
 
+        $this->log("Ažuriranje varijacije", [
+            'product_id' => $product_id,
+            'variation_id' => $variation_id
+        ]);
+
         $response = wp_remote_post($endpoint, [
             'method' => 'PUT',
             'headers' => ['Content-Type' => 'application/json'],
@@ -270,21 +401,55 @@ class Variation_Handler
                 'product_id' => $product_id,
                 'variation_id' => $variation_id,
                 'error' => $response->get_error_message()
-            ]);
+            ], 'error');
             return false;
         }
 
-        return wp_remote_retrieve_response_code($response) === 200;
+        $response_code = wp_remote_retrieve_response_code($response);
+        if ($response_code !== 200) {
+            $this->log("API greška pri ažuriranju varijacije", [
+                'product_id' => $product_id,
+                'variation_id' => $variation_id,
+                'response_code' => $response_code,
+                'response' => wp_remote_retrieve_body($response)
+            ], 'error');
+            return false;
+        }
+
+        return true;
     }
 
     private function wait_for_variations_generation($target_product_id, $max_attempts = 10)
     {
+        $this->log("Čekanje na generisanje varijacija", [
+            'target_product_id' => $target_product_id,
+            'max_attempts' => $max_attempts
+        ]);
+
         for ($i = 0; $i < $max_attempts; $i++) {
-            if (!empty($this->get_all_target_variations($target_product_id))) {
+            $variations = $this->get_all_target_variations($target_product_id);
+
+            if (!empty($variations)) {
+                $this->log("Varijacije su generisane", [
+                    'target_product_id' => $target_product_id,
+                    'attempts' => $i + 1,
+                    'count' => count($variations)
+                ], 'success');
                 return true;
             }
+
+            $this->log("Varijacije još nisu generisane, pokušaj " . ($i + 1), [
+                'target_product_id' => $target_product_id
+            ]);
+
             usleep(500000); // 0.5 sekundi pauza
         }
+
+        $this->log("Timeout pri čekanju na generisanje varijacija", [
+            'target_product_id' => $target_product_id,
+            'max_attempts' => $max_attempts
+        ], 'error');
+
         return false;
     }
 }

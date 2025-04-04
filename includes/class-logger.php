@@ -7,7 +7,7 @@ class Logger
     private static $instance = null;
     private $logs = [];
     private $enabled = false;
-    private $max_logs = 50; // Maksimalan broj logova za čuvanje
+    private $max_logs = 100; // Povećan maksimalan broj logova
 
     private function __construct()
     {
@@ -65,9 +65,25 @@ class Logger
 
         update_option('shopito_sync_logs', $this->logs);
 
-        // Još uvek pišemo u error_log za debug
+        // Debugovanje u error_log samo ako je omogućeno logovanje
         $context_str = !empty($context) ? ' | ' . json_encode($context) : '';
-        error_log("[{$level}] Shopito Sync: {$message}{$context_str}");
+        $emoji = $this->get_level_emoji($level);
+        error_log("{$emoji} Shopito Sync [{$level}]: {$message}{$context_str}");
+    }
+
+    private function get_level_emoji($level)
+    {
+        switch ($level) {
+            case 'error':
+                return '❌';
+            case 'success':
+                return '✅';
+            case 'warning':
+                return '⚠️';
+            case 'info':
+            default:
+                return 'ℹ️';
+        }
     }
 
     public function info($message, $context = [])
@@ -92,6 +108,10 @@ class Logger
 
     public function get_logs($limit = 50, $level = null)
     {
+        if (!$this->enabled) {
+            return [];
+        }
+
         $filtered_logs = $this->logs;
 
         if ($level) {
