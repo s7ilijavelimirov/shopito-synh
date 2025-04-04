@@ -4,6 +4,7 @@ jQuery(document).ready(function ($) {
         const messageClass = type === 'error' ? 'error' : 'success';
         container.html(`<div class="sync-message ${messageClass}">${message}</div>`);
     };
+    
     function getStatusMessage(response, type) {
         if (response.success) {
             if (type === 'rest') {
@@ -35,9 +36,15 @@ jQuery(document).ready(function ($) {
             }
         }
     }
+    
     const updateSyncProgress = (step, status = 'active', message = '') => {
         const container = $('.sync-progress-container');
         const stepElement = container.find(`[data-step="${step}"]`);
+
+        if (!stepElement.length) {
+            console.log(`Step element "${step}" not found`);
+            return;
+        }
 
         if (!stepElement.find('.step-text').data('original-text')) {
             stepElement.find('.step-text').data('original-text',
@@ -107,7 +114,7 @@ jQuery(document).ready(function ($) {
                 html += `<div class="notice ${status.class}"><p>${status.message}</p></div>`;
 
                 // Detalji
-                if (response.data && response.data.debug_info) {  // Proveravamo da li postoji data i debug_info
+                if (response.data && response.data.debug_info) {
                     html += '<div class="debug-section" style="margin-top: 15px;">';
                     html += '<h4>Tehnički detalji:</h4>';
                     html += '<dl style="margin-left: 20px;">';
@@ -172,6 +179,7 @@ jQuery(document).ready(function ($) {
     $('#test-user-auth').on('click', function () {
         testConnection('user');
     });
+    
     // Sinhronizacija stanja proizvoda
     $('.shopito-sync-stock').on('click', async function (e) {
         e.preventDefault();
@@ -247,6 +255,7 @@ jQuery(document).ready(function ($) {
             spinnerDiv.removeClass('is-active');
         }
     });
+    
     // Sinhronizacija proizvoda
     $('.shopito-sync-now').on('click', async function (e) {
         e.preventDefault();

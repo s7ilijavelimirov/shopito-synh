@@ -11,7 +11,24 @@ class Settings
         add_action('admin_menu', array($this, 'add_admin_menu'));
         add_action('admin_init', array($this, 'init_settings'));
         add_action('wp_ajax_test_shopito_connection', array($this, 'test_shopito_connection'));
+        add_action('wp_ajax_clear_shopito_logs', array($this, 'clear_logs'));
     }
+
+    public function clear_logs()
+    {
+        check_ajax_referer('shopito_sync_nonce', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Nemate dozvolu za ovu akciju');
+            return;
+        }
+
+        $logger = Logger::get_instance();
+        $logger->clear_logs();
+
+        wp_send_json_success('Logovi su uspešno obrisani');
+    }
+
     private function get_environment_settings($url)
     {
         // Lokalno okruženje
@@ -37,6 +54,7 @@ class Settings
             'verify_ssl' => $is_ssl // Verifikujemo SSL samo ako već koristi HTTPS
         ];
     }
+
     public function test_shopito_connection()
     {
         check_ajax_referer('test_shopito_connection', 'nonce');
@@ -44,6 +62,9 @@ class Settings
         $settings = get_option('shopito_sync_settings');
         $test_type = isset($_POST['test_type']) ? sanitize_text_field($_POST['test_type']) : 'rest';
         $debug_info = [];
+
+        $logger = Logger::get_instance();
+        $logger->info("Testing connection", ['type' => $test_type]);
 
         if ($test_type === 'rest') {
             // Test REST API sa Consumer Keys
@@ -66,6 +87,8 @@ class Settings
             $debug_info['endpoint'] = $endpoint;
             $debug_info['auth_type'] = 'REST API (Consumer Keys)';
 
+            $logger->info("Testing REST API connection", ['endpoint' => $endpoint]);
+
             $response = wp_remote_get($endpoint, $args);
         } else {
             // Test WordPress User Auth
@@ -82,13 +105,18 @@ class Settings
             $debug_info['endpoint'] = $endpoint;
             $debug_info['auth_type'] = 'Basic Auth (Application Password)';
 
+            $logger->info("Testing Basic Auth connection", ['endpoint' => $endpoint]);
+
             $response = wp_remote_get($endpoint, $args);
         }
 
         if (is_wp_error($response)) {
-            $debug_info['error'] = $response->get_error_message();
+            $error_msg = $response->get_error_message();
+            $debug_info['error'] = $error_msg;
+            $logger->error("Connection test failed: " . $error_msg);
+
             wp_send_json_error([
-                'message' => "Greška pri konekciji: " . $response->get_error_message(),
+                'message' => "Greška pri konekciji: " . $error_msg,
                 'debug_info' => $debug_info
             ]);
             return;
@@ -100,10 +128,18 @@ class Settings
         $debug_info['response_code'] = $response_code;
         $debug_info['response_body'] = json_decode($response_body);
 
+        $logger->info("Connection test response", [
+            'response_code' => $response_code,
+            'response_body_length' => strlen($response_body)
+        ]);
+
         if ($response_code === 200) {
             $success_message = $test_type === 'rest' ?
                 "REST API konekcija uspešna (Consumer Keys)!" :
                 "User Auth konekcija uspešna!";
+
+            $logger->success($success_message);
+
             wp_send_json_success([
                 'message' => $success_message,
                 'debug_info' => $debug_info
@@ -112,6 +148,9 @@ class Settings
             $error_message = $test_type === 'rest' ?
                 "REST API konekcija neuspešna." :
                 "User Auth konekcija neuspešna.";
+
+            $logger->error($error_message, ['status' => $response_code]);
+
             wp_send_json_error([
                 'message' => $error_message . " Status: " . $response_code,
                 'debug_info' => $debug_info
@@ -128,6 +167,16 @@ class Settings
             'shopito-sync',
             array($this, 'render_settings_page'),
             'dashicons-rest-api'
+        );
+
+        // Dodajemo podstranicu za logove
+        add_submenu_page(
+            'shopito-sync',
+            'Shopito Sync Logs',
+            'Logovi',
+            'manage_options',
+            'shopito-sync-logs',
+            array($this, 'render_logs_page')
         );
     }
 
@@ -146,6 +195,14 @@ class Settings
             'shopito-sync'
         );
 
+        // Dodajemo novu sekciju za podešavanja logovanja
+        add_settings_section(
+            'shopito_sync_logging',
+            'Podešavanja logovanja',
+            array($this, 'render_logging_section'),
+            'shopito-sync'
+        );
+
         $this->add_settings_fields();
     }
 
@@ -154,23 +211,33 @@ class Settings
         $fields = [
             'target_url' => [
                 'label' => 'URL sajta (shopito.ba)',
-                'render_callback' => 'render_target_url_field'
+                'render_callback' => 'render_target_url_field',
+                'section' => 'shopito_sync_main'
             ],
             'consumer_key' => [
                 'label' => 'WooCommerce Consumer Key',
-                'render_callback' => 'render_consumer_key_field'
+                'render_callback' => 'render_consumer_key_field',
+                'section' => 'shopito_sync_main'
             ],
             'consumer_secret' => [
                 'label' => 'WooCommerce Consumer Secret',
-                'render_callback' => 'render_consumer_secret_field'
+                'render_callback' => 'render_consumer_secret_field',
+                'section' => 'shopito_sync_main'
             ],
             'username' => [
                 'label' => 'Username',
-                'render_callback' => 'render_username_field'
+                'render_callback' => 'render_username_field',
+                'section' => 'shopito_sync_main'
             ],
             'password' => [
                 'label' => 'Application Password',
-                'render_callback' => 'render_password_field'
+                'render_callback' => 'render_password_field',
+                'section' => 'shopito_sync_main'
+            ],
+            'enable_logging' => [
+                'label' => 'Omogući logovanje',
+                'render_callback' => 'render_enable_logging_field',
+                'section' => 'shopito_sync_logging'
             ]
         ];
 
@@ -180,7 +247,7 @@ class Settings
                 $field['label'],
                 array($this, $field['render_callback']),
                 'shopito-sync',
-                'shopito_sync_main'
+                $field['section']
             );
         }
     }
@@ -223,7 +290,194 @@ class Settings
             }
         }
 
+        // Validacija polja za logovanje
+        $validated['enable_logging'] = isset($input['enable_logging']) ? 'yes' : 'no';
+
+        // Ažuriramo status logovanja u logger instanci
+        $logger = Logger::get_instance();
+        $logger->set_enabled($validated['enable_logging'] === 'yes');
+
         return $validated;
+    }
+
+    public function render_logging_section($args)
+    {
+?>
+        <p>Ovde možete podesiti opcije za logovanje operacija sinhronizacije.</p>
+    <?php
+    }
+
+    public function render_enable_logging_field()
+    {
+        $options = get_option('shopito_sync_settings');
+        $checked = isset($options['enable_logging']) && $options['enable_logging'] === 'yes';
+    ?>
+        <label>
+            <input type="checkbox"
+                name="shopito_sync_settings[enable_logging]"
+                value="yes"
+                <?php checked($checked); ?>>
+            Omogući logovanje operacija sinhronizacije
+        </label>
+        <p class="description">Kada je uključeno, plugin će beležiti detaljne informacije o svakoj sinhronizaciji.</p>
+    <?php
+    }
+
+    public function render_logs_page()
+    {
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+
+        $logger = Logger::get_instance();
+        $logs = $logger->get_logs();
+        $is_enabled = $logger->is_enabled();
+    ?>
+        <div class="wrap">
+            <h1><?php echo esc_html('Shopito Sync - Logovi'); ?></h1>
+
+            <div class="notice notice-info">
+                <p><?php echo $is_enabled ? 'Logovanje je trenutno <strong>uključeno</strong>.' : 'Logovanje je trenutno <strong>isključeno</strong>.'; ?>
+                    Možete promeniti ovo podešavanje u <a href="<?php echo admin_url('admin.php?page=shopito-sync'); ?>">glavnim podešavanjima</a>.</p>
+            </div>
+
+            <div class="tablenav top">
+                <div class="alignleft actions">
+                    <button type="button" id="clear-logs" class="button" data-nonce="<?php echo wp_create_nonce('shopito_sync_nonce'); ?>">
+                        Obriši sve logove
+                    </button>
+                </div>
+                <div class="tablenav-pages">
+                    <span class="displaying-num"><?php echo count($logs); ?> stavki</span>
+                </div>
+                <br class="clear">
+            </div>
+
+            <table class="wp-list-table widefat fixed striped logs-table">
+                <thead>
+                    <tr>
+                        <th scope="col" class="column-date">Vreme</th>
+                        <th scope="col" class="column-level">Nivo</th>
+                        <th scope="col" class="column-message">Poruka</th>
+                        <th scope="col" class="column-context">Kontekst</th>
+                    </tr>
+                </thead>
+                <tbody id="the-list">
+                    <?php if (empty($logs)): ?>
+                        <tr>
+                            <td colspan="4">Nema dostupnih logova.</td>
+                        </tr>
+                    <?php else: ?>
+                        <?php foreach ($logs as $log): ?>
+                            <tr>
+                                <td><?php echo esc_html(date_i18n('d.m.Y H:i:s', strtotime($log['timestamp']))); ?></td>
+                                <td>
+                                    <span class="log-level log-level-<?php echo esc_attr($log['level']); ?>">
+                                        <?php echo esc_html(ucfirst($log['level'])); ?>
+                                    </span>
+                                </td>
+                                <td><?php echo esc_html($log['message']); ?></td>
+                                <td>
+                                    <?php if (!empty($log['context'])): ?>
+                                        <pre><?php echo esc_html(json_encode($log['context'], JSON_PRETTY_PRINT)); ?></pre>
+                                    <?php else: ?>
+                                        <em>Nema konteksta</em>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
+
+        <style>
+            .log-level {
+                display: inline-block;
+                padding: 3px 6px;
+                border-radius: 3px;
+                font-weight: bold;
+                color: white;
+            }
+
+            .log-level-info {
+                background-color: #0073aa;
+            }
+
+            .log-level-error {
+                background-color: #dc3232;
+            }
+
+            .log-level-success {
+                background-color: #46b450;
+            }
+
+            .log-level-warning {
+                background-color: #ffb900;
+                color: #444;
+            }
+
+            .logs-table .column-date {
+                width: 15%;
+            }
+
+            .logs-table .column-level {
+                width: 10%;
+            }
+
+            .logs-table .column-message {
+                width: 40%;
+            }
+
+            .logs-table .column-context {
+                width: 35%;
+            }
+
+            .logs-table pre {
+                margin: 0;
+                padding: 5px;
+                background: #f8f8f8;
+                overflow: auto;
+                max-height: 100px;
+                font-size: 11px;
+            }
+        </style>
+
+        <script>
+            jQuery(document).ready(function($) {
+                $('#clear-logs').on('click', function() {
+                    if (confirm('Da li ste sigurni da želite da obrišete sve logove?')) {
+                        var nonce = $(this).data('nonce');
+
+                        $.ajax({
+                            url: ajaxurl,
+                            type: 'POST',
+                            data: {
+                                action: 'clear_shopito_logs',
+                                nonce: nonce
+                            },
+                            beforeSend: function() {
+                                $(this).prop('disabled', true);
+                            },
+                            success: function(response) {
+                                if (response.success) {
+                                    location.reload();
+                                } else {
+                                    alert('Greška: ' + response.data);
+                                }
+                            },
+                            error: function() {
+                                alert('Došlo je do greške prilikom brisanja logova.');
+                            },
+                            complete: function() {
+                                $(this).prop('disabled', false);
+                            }
+                        });
+                    }
+                });
+            });
+        </script>
+    <?php
     }
 
     public function render_settings_page()
@@ -236,7 +490,7 @@ class Settings
         $environment = isset($settings['environment']) ? $settings['environment'] : 'test';
 
         settings_errors('shopito_sync_settings');
-?>
+    ?>
         <div class="wrap">
             <h1>
                 <?php echo esc_html(get_admin_page_title()); ?>
@@ -261,7 +515,73 @@ class Settings
                 <span class="spinner" style="float:none;"></span>
                 <div id="connection-result"></div>
             </div>
+
+            <?php if (Logger::get_instance()->is_enabled()): ?>
+                <div class="recent-logs-section" style="margin-top: 30px;">
+                    <h2>Skorašnji logovi</h2>
+                    <p>Prikazani su 10 najnovijih logova. <a href="<?php echo admin_url('admin.php?page=shopito-sync-logs'); ?>">Pogledaj sve logove</a></p>
+
+                    <table class="wp-list-table widefat fixed striped logs-table">
+                        <thead>
+                            <tr>
+                                <th scope="col" class="column-date">Vreme</th>
+                                <th scope="col" class="column-level">Nivo</th>
+                                <th scope="col" class="column-message">Poruka</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php
+                            $recent_logs = Logger::get_instance()->get_logs(10);
+                            if (empty($recent_logs)):
+                            ?>
+                                <tr>
+                                    <td colspan="3">Nema dostupnih logova.</td>
+                                </tr>
+                            <?php else: ?>
+                                <?php foreach ($recent_logs as $log): ?>
+                                    <tr>
+                                        <td><?php echo esc_html(date_i18n('d.m.Y H:i:s', strtotime($log['timestamp']))); ?></td>
+                                        <td>
+                                            <span class="log-level log-level-<?php echo esc_attr($log['level']); ?>">
+                                                <?php echo esc_html(ucfirst($log['level'])); ?>
+                                            </span>
+                                        </td>
+                                        <td><?php echo esc_html($log['message']); ?></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
+            <?php endif; ?>
         </div>
+
+        <style>
+            .log-level {
+                display: inline-block;
+                padding: 3px 6px;
+                border-radius: 3px;
+                font-weight: bold;
+                color: white;
+            }
+
+            .log-level-info {
+                background-color: #0073aa;
+            }
+
+            .log-level-error {
+                background-color: #dc3232;
+            }
+
+            .log-level-success {
+                background-color: #46b450;
+            }
+
+            .log-level-warning {
+                background-color: #ffb900;
+                color: #444;
+            }
+        </style>
     <?php
     }
 
