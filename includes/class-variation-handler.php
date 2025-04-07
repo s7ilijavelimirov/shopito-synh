@@ -442,7 +442,9 @@ class Variation_Handler
                 'target_product_id' => $target_product_id
             ]);
 
-            usleep(500000); // 0.5 sekundi pauza
+            // Eksponencijalni backoff - postepeno povećanje vremena čekanja
+            $sleep_time = 500000 * pow(1.5, $i); // počinje sa 0.5s, pa 0.75s, 1.125s itd.
+            usleep($sleep_time);
         }
 
         $this->log("Timeout pri čekanju na generisanje varijacija", [

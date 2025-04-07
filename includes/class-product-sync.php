@@ -49,6 +49,12 @@ class Product_Sync
                 Sinhroniši odmah
                 <span class="spinner"></span>
             </button>
+            <div class="sync-options" style="margin: 10px 0;">
+                <label>
+                    <input type="checkbox" id="skip-images" class="skip-images-option">
+                    Preskoči upload slika (brža sinhronizacija)
+                </label>
+            </div>
             <!-- Dugme za sinhronizaciju samo stanja -->
             <button type="button" class="button shopito-sync-stock"
                 data-product-id="<?php echo esc_attr($post->ID); ?>"
@@ -189,6 +195,8 @@ class Product_Sync
         check_ajax_referer('shopito_sync_nonce', 'nonce');
 
         $product_id = isset($_POST['product_id']) ? intval($_POST['product_id']) : 0;
+        $skip_images = isset($_POST['skip_images']) && $_POST['skip_images'] === 'true';
+
         if (!$product_id) {
             wp_send_json_error('Neispravan ID proizvoda');
             return;
@@ -204,10 +212,11 @@ class Product_Sync
             $this->logger->info("Započeta puna sinhronizacija proizvoda", [
                 'product_id' => $product_id,
                 'product_name' => $product->get_name(),
-                'product_sku' => $product->get_sku()
+                'product_sku' => $product->get_sku(),
+                'skip_images' => $skip_images
             ]);
 
-            $result = $this->api_handler->sync_product($product_id);
+            $result = $this->api_handler->sync_product($product_id, $skip_images);
 
             if (is_wp_error($result)) {
                 $this->logger->error("Greška pri punoj sinhronizaciji", [

@@ -43,7 +43,16 @@ class Attribute_Handler
     private function cache_target_attributes()
     {
         if ($this->cached_attributes !== null) {
-            return; // Već je keširano
+            return; // Već je keširano u memoriji
+        }
+
+        // Ključ za transient zavisi od URL-a
+        $cache_key = 'shopito_attr_' . md5($this->settings['target_url']);
+        $cached_data = get_transient($cache_key);
+
+        if ($cached_data !== false) {
+            $this->cached_attributes = $cached_data;
+            return;
         }
 
         $this->cached_attributes = [];
@@ -79,6 +88,9 @@ class Attribute_Handler
             $this->cached_attributes[$attr['slug']] = $attr;
             $this->cached_attributes[$attr['name']] = $attr;
         }
+
+        // Čuvamo u transient na 24h
+        set_transient($cache_key, $this->cached_attributes, DAY_IN_SECONDS);
     }
 
     /**

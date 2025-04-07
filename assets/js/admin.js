@@ -296,6 +296,7 @@ jQuery(document).ready(function ($) {
         const statusDiv = button.siblings('.sync-status');
         const spinnerDiv = button.find('.spinner');
         const progressContainer = $('.sync-progress-container');
+        const skipImages = $('#skip-images').is(':checked'); // Dodati ovu liniju
 
         // Reset UI
         button.prop('disabled', true);
@@ -337,7 +338,8 @@ jQuery(document).ready(function ($) {
             data: {
                 action: 'sync_to_ba',
                 nonce: shopitoSync.nonce,
-                product_id: productId
+                product_id: productId,
+                skip_images: skipImages // Dodati ovaj parametar
             },
             success: function (response) {
                 clearInterval(progressTimer);

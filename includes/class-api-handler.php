@@ -34,11 +34,23 @@ class API_Handler
     {
         $attempt = 0;
         $last_error = null;
+        $success = false;
 
-        while ($attempt < $this->max_retries) {
+        while ($attempt < $this->max_retries && !$success) {
             if ($attempt > 0) {
-                sleep($this->retry_delay * $attempt);
-                $this->logger->info("Retry attempt " . ($attempt + 1) . " for endpoint: " . $endpoint);
+                // Eksponencijalni backoff
+                $delay = $this->retry_delay * pow(2, $attempt - 1);
+                $this->logger->info("Čekanje {$delay}s pre ponovnog pokušaja", [
+                    'attempt' => $attempt + 1,
+                    'endpoint' => $endpoint
+                ]);
+                sleep($delay);
+            }
+
+            // Dinamički povećavamo timeout za ponovne pokušaje
+            $timeout = isset($args['timeout']) ? $args['timeout'] : 30;
+            if ($attempt > 0) {
+                $args['timeout'] = $timeout * 1.5; // Povećavamo timeout za 50%
             }
 
             $response = wp_remote_request($endpoint, array_merge($args, ['method' => $method]));
@@ -49,7 +61,8 @@ class API_Handler
                 // Loggujemo response code za debug
                 $this->logger->info("API response code: " . $response_code, [
                     'endpoint' => $endpoint,
-                    'method' => $method
+                    'method' => $method,
+                    'attempt' => $attempt + 1
                 ]);
 
                 if ($response_code >= 200 && $response_code < 300) {
@@ -69,7 +82,7 @@ class API_Handler
                 $this->logger->error("API Error with response code: " . $response_code, [
                     'endpoint' => $endpoint,
                     'method' => $method,
-                    'response' => $body
+                    'response' => substr($body, 0, 255) // Logujemo samo deo odgovora
                 ]);
             } else {
                 $this->logger->error("WP_Error: " . $response->get_error_message(), [
@@ -85,11 +98,14 @@ class API_Handler
 
         return $last_error;
     }
-    public function sync_product($product_id)
+    public function sync_product($product_id, $skip_images = false)
     {
         $steps = [];
         $logger = Logger::get_instance();
-        $logger->info("Starting full product sync", ['product_id' => $product_id]);
+        $logger->info("Starting full product sync", [
+            'product_id' => $product_id,
+            'skip_images' => $skip_images
+        ]);
 
         try {
             // 1. Inicijalna provera proizvoda
@@ -102,15 +118,30 @@ class API_Handler
             ]);
 
             // 2. Batch procesiranje slika
-            $steps[] = ['name' => 'images', 'status' => 'active', 'message' => 'Prebacivanje slika...'];
-            $images = $this->process_images_in_batch($product);
-            $steps[count($steps) - 1] = [
-                'name' => 'images',
-                'status' => 'completed',
-                'message' => count($images) . ' slika(e) uploadovano'
-            ];
+            // 2. Batch procesiranje slika (samo ako nije skip_images)
+            $images = [];
+            if (!$skip_images) {
+                $steps[] = ['name' => 'images', 'status' => 'active', 'message' => 'Prebacivanje slika...'];
+                $images = $this->process_images_in_batch($product);
+                $steps[count($steps) - 1] = [
+                    'name' => 'images',
+                    'status' => 'completed',
+                    'message' => count($images) . ' slika(e) uploadovano'
+                ];
 
-            $logger->info("Images processed", ['count' => count($images)]);
+                $logger->info("Images processed", ['count' => count($images)]);
+            } else {
+                $logger->info("Skipping image upload (user requested)", ['product_id' => $product_id]);
+
+                // Ako postoje prethodno uploadovane slike, koristimo samo njihove ID-jeve
+                if ($existing_product_id) {
+                    $existing_images = $this->get_existing_product_images($existing_product_id);
+                    if (!empty($existing_images)) {
+                        $images = $existing_images;
+                        $logger->info("Using existing images", ['count' => count($images)]);
+                    }
+                }
+            }
 
             // 3. Priprema i slanje proizvoda
             $data = $this->prepare_product_data($product);
@@ -196,6 +227,20 @@ class API_Handler
             return new \WP_Error('sync_error', $e->getMessage());
         }
     }
+    private function get_existing_product_images($product_id)
+    {
+        $endpoint = $this->build_api_endpoint("products/{$product_id}");
+        $response = wp_remote_get($endpoint, ['sslverify' => false, 'timeout' => 30]);
+
+        if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
+            $product_data = json_decode(wp_remote_retrieve_body($response), true);
+            if (!empty($product_data['images'])) {
+                return $product_data['images'];
+            }
+        }
+
+        return [];
+    }
     /**
      * Pronalazi proizvod po imenu na ciljnom sajtu
      */
@@ -225,25 +270,42 @@ class API_Handler
         $batch_size = 3; // Procesiramo po 3 slike odjednom
 
         // Skupljamo sve slike (glavnu i galeriju)
-        $image_ids = array_merge(
+        $image_ids = array_filter(array_merge(
             [$product->get_image_id()],
             $product->get_gallery_image_ids()
-        );
-        $image_ids = array_filter($image_ids);
+        ));
+
+        // Pre-fetch sve URL-ove slika odjednom
+        $image_urls = [];
+        foreach ($image_ids as $image_id) {
+            $url = wp_get_attachment_url($image_id);
+            if ($url) {
+                $image_urls[$image_id] = $url;
+            }
+        }
+
+        $this->logger->info("Pre-fetched image URLs", ['count' => count($image_urls)]);
 
         // Procesiramo slike u batch-evima
-        foreach (array_chunk($image_ids, $batch_size) as $batch) {
-            $batch_promises = [];
-            foreach ($batch as $index => $image_id) {
-                if ($image_url = wp_get_attachment_url($image_id)) {
+        foreach (array_chunk($image_ids, $batch_size) as $index => $batch) {
+            $this->logger->info("Processing image batch", ['batch' => $index + 1]);
+
+            foreach ($batch as $position => $image_id) {
+                if (isset($image_urls[$image_id])) {
+                    $image_url = $image_urls[$image_id];
                     if ($uploaded_id = $this->image_handler->upload_image($image_url)) {
                         $images[] = [
                             'id' => $uploaded_id,
                             'src' => $image_url,
-                            'position' => $index
+                            'position' => $position
                         ];
                     }
                 }
+            }
+
+            // Kratka pauza između batch-eva da ne preopteretimo server
+            if ($index < count($image_ids) / $batch_size - 1) {
+                usleep(500000); // 0.5 sekundi pauza
             }
         }
 

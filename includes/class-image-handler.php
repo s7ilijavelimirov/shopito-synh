@@ -70,9 +70,20 @@ class Image_Handler
 
         $filename = basename(parse_url($image_url, PHP_URL_PATH));
 
+        // Koristimo transient za dugoročno keširanja statusa slika
+        $cache_key = 'shopito_img_' . md5($filename);
+        $cached_id = get_transient($cache_key);
+
+        if ($cached_id) {
+            $this->log("Slika pronađena u kešu: {$filename}", 'info', ['cached_id' => $cached_id]);
+            return $cached_id;
+        }
+
         // Prvo proverimo da li slika već postoji
         $existing_id = $this->check_image_exists_by_name($filename);
         if ($existing_id) {
+            // Keširanje rezultata na 7 dana
+            set_transient($cache_key, $existing_id, 7 * DAY_IN_SECONDS);
             $this->log("Slika već postoji na ciljnom sajtu: {$filename}", 'info', ['existing_id' => $existing_id]);
             return $existing_id;
         }
@@ -106,6 +117,8 @@ class Image_Handler
             $media = json_decode(wp_remote_retrieve_body($response));
             if (isset($media->id)) {
                 $this->image_cache[$filename] = $media->id;
+                // Keširanje rezultata na 7 dana
+                set_transient($cache_key, $media->id, 7 * DAY_IN_SECONDS);
                 $this->log("Uspešno otpremljena slika: {$filename}", 'success', ['media_id' => $media->id]);
                 return $media->id;
             }
