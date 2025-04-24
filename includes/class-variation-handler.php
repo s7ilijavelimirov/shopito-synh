@@ -120,13 +120,13 @@ class Variation_Handler
         }
     }
 
-    private function prepare_variation_data($variation_obj, $target_variation)
+    private function prepare_variation_data($variation_obj, $target_variation, $variation_index = 0)
     {
         $parent_product = wc_get_product($variation_obj->get_parent_id());
+
         $variation_data = [
             'regular_price' => $this->api_handler->convert_price_to_bam($variation_obj->get_regular_price()),
             'sale_price' => $this->api_handler->convert_price_to_bam($variation_obj->get_sale_price()),
-            'sku' => $variation_obj->get_sku(),
             'stock_quantity' => $variation_obj->get_stock_quantity(),
             'manage_stock' => $variation_obj->get_manage_stock(),
             'stock_status' => $variation_obj->get_stock_status(),
@@ -151,6 +151,34 @@ class Variation_Handler
                 ]
             ]
         ];
+
+        // Provera i dodavanje SKU-a
+        $variation_sku = $variation_obj->get_sku();
+        $parent_sku = $parent_product ? $parent_product->get_sku() : '';
+
+        // Proveri da li je SKU validan (nije prazan i nije dupliciran)
+        $is_valid_sku = !empty($variation_sku) && $variation_sku !== $parent_sku;
+
+        // Dodaj SKU samo ako je validan i normaliziran
+        if ($is_valid_sku) {
+            $normalized_sku = isset($this->api_handler) && method_exists($this->api_handler, 'normalize_sku')
+                ? $this->api_handler->normalize_sku($variation_sku)
+                : trim($variation_sku);
+
+            $variation_data['sku'] = $normalized_sku;
+
+            $this->log("Korišten postojeći SKU za varijaciju", 'info', [
+                'variation_id' => $variation_obj->get_id(),
+                'sku' => $normalized_sku
+            ]);
+        } else {
+            $this->log("Preskočen problematični SKU za varijaciju", 'warning', [
+                'variation_id' => $variation_obj->get_id(),
+                'original_sku' => $variation_sku,
+                'parent_sku' => $parent_sku
+            ]);
+            // Ovde namerno ne dodajemo SKU u variation_data, tako da polje SKU neće biti ažurirano na ciljnom sajtu
+        }
 
         $length = $variation_obj->get_length();
         $width = $variation_obj->get_width();

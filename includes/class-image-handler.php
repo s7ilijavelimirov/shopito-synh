@@ -21,22 +21,36 @@ class Image_Handler
 
     private function check_image_exists_by_name($filename)
     {
-        // Prvo proveravamo keš za tačno ime
+        // Brišemo transient keš jer možda sadrži zastarele ID-jeve
+        $cache_key = 'shopito_img_' . md5($filename);
+        delete_transient($cache_key);
+
+        // Prvo proverimo lokalni keš (za trenutnu sesiju)
         if (isset($this->image_cache[$filename])) {
+            $this->logger->info("Slika pronađena u lokalnom kešu: {$filename}", [
+                'cached_id' => $this->image_cache[$filename]
+            ]);
             return $this->image_cache[$filename];
         }
 
-        // Proveravamo keš za verziju bez -scaled
+        // Proveravamo bez -scaled varijante
         $base_filename = str_replace('-scaled', '', $filename);
         if (isset($this->image_cache[$base_filename])) {
+            $this->logger->info("Slika pronađena u lokalnom kešu (bez scaled): {$base_filename}", [
+                'cached_id' => $this->image_cache[$base_filename]
+            ]);
             return $this->image_cache[$base_filename];
         }
 
-        // Ako nije u kešu, proveravamo API
+        // API poziv za pretragu po imenu fajla
         $endpoint = add_query_arg([
             'search' => $filename,
-            'per_page' => 1
+            'per_page' => 10 // Povećan broj rezultata za bolju pretragu
         ], trailingslashit($this->settings['target_url']) . 'wp-json/wp/v2/media');
+
+        $this->logger->info("Pretraga slike na ciljnom sajtu: {$filename}", [
+            'endpoint' => $endpoint
+        ]);
 
         $response = wp_remote_get($endpoint, [
             'headers' => [
@@ -50,48 +64,63 @@ class Image_Handler
             $media = json_decode(wp_remote_retrieve_body($response));
             foreach ($media as $item) {
                 $item_filename = basename($item->source_url);
-                if ($item_filename === $filename || str_replace('-scaled', '', $item_filename) === $base_filename) {
-                    // Keširamo obe verzije imena
+
+                // Probamo različite varijante imena (originalno, bez scaled)
+                if (
+                    $item_filename === $filename ||
+                    str_replace('-scaled', '', $item_filename) === str_replace('-scaled', '', $filename)
+                ) {
+
+                    // Ažuriramo lokalni keš
                     $this->image_cache[$filename] = $item->id;
                     $this->image_cache[$base_filename] = $item->id;
+
+                    // Ažuriramo transient keš sa kraćim trajanjem
+                    set_transient($cache_key, $item->id, 1 * DAY_IN_SECONDS); // Skraćeno na 1 dan
+
+                    $this->logger->info("Slika pronađena na ciljnom sajtu: {$filename}", [
+                        'media_id' => $item->id
+                    ]);
+
                     return $item->id;
                 }
             }
+        } else {
+            $error_message = is_wp_error($response) ? $response->get_error_message() : wp_remote_retrieve_response_code($response);
+            $this->logger->warning("Problem sa pretragom slike: {$filename}", [
+                'error' => $error_message
+            ]);
         }
 
+        $this->logger->info("Slika nije pronađena na ciljnom sajtu: {$filename}");
         return false;
     }
 
     public function upload_image($image_url)
     {
         if (empty($image_url)) {
+            $this->logger->warning("Prazan URL slike, preskačem");
             return false;
         }
 
         $filename = basename(parse_url($image_url, PHP_URL_PATH));
 
-        // Koristimo transient za dugoročno keširanja statusa slika
-        $cache_key = 'shopito_img_' . md5($filename);
-        $cached_id = get_transient($cache_key);
-
-        if ($cached_id) {
-            $this->log("Slika pronađena u kešu: {$filename}", 'info', ['cached_id' => $cached_id]);
-            return $cached_id;
-        }
-
-        // Prvo proverimo da li slika već postoji
+        // Uvek prvo proverimo da li slika već postoji, bez korišćenja keša
         $existing_id = $this->check_image_exists_by_name($filename);
         if ($existing_id) {
-            // Keširanje rezultata na 7 dana
-            set_transient($cache_key, $existing_id, 7 * DAY_IN_SECONDS);
-            $this->log("Slika već postoji na ciljnom sajtu: {$filename}", 'info', ['existing_id' => $existing_id]);
+            $this->logger->info("Slika već postoji na ciljnom sajtu: {$filename}", [
+                'existing_id' => $existing_id
+            ]);
             return $existing_id;
         }
 
         // Preuzimanje slike
+        $this->logger->info("Preuzimanje slike: {$image_url}");
         $temp_file = download_url($image_url);
         if (is_wp_error($temp_file)) {
-            $this->log("Greška pri preuzimanju slike: {$filename}", 'error', ['error' => $temp_file->get_error_message()]);
+            $this->logger->error("Greška pri preuzimanju slike: {$filename}", [
+                'error' => $temp_file->get_error_message()
+            ]);
             return false;
         }
 
@@ -100,33 +129,54 @@ class Image_Handler
 
         @unlink($temp_file); // Odmah čistimo temp fajl
 
-        $endpoint = trailingslashit($this->settings['target_url']) . 'wp-json/wp/v2/media';
+        // Pokušajmo do 3 puta uploadati sliku
+        $max_attempts = 3;
+        for ($attempt = 1; $attempt <= $max_attempts; $attempt++) {
+            $endpoint = trailingslashit($this->settings['target_url']) . 'wp-json/wp/v2/media';
 
-        $response = wp_remote_post($endpoint, [
-            'headers' => [
-                'Authorization' => 'Basic ' . base64_encode($this->settings['username'] . ':' . $this->settings['password']),
-                'Content-Disposition' => 'attachment; filename="' . $filename . '"',
-                'Content-Type' => $file_type['type']
-            ],
-            'body' => $file_content,
-            'timeout' => 120,
-            'sslverify' => false
-        ]);
+            $this->logger->info("Upload slike (pokušaj {$attempt}): {$filename}");
 
-        if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 201) {
-            $media = json_decode(wp_remote_retrieve_body($response));
-            if (isset($media->id)) {
-                $this->image_cache[$filename] = $media->id;
-                // Keširanje rezultata na 7 dana
-                set_transient($cache_key, $media->id, 7 * DAY_IN_SECONDS);
-                $this->log("Uspešno otpremljena slika: {$filename}", 'success', ['media_id' => $media->id]);
-                return $media->id;
+            $response = wp_remote_post($endpoint, [
+                'headers' => [
+                    'Authorization' => 'Basic ' . base64_encode($this->settings['username'] . ':' . $this->settings['password']),
+                    'Content-Disposition' => 'attachment; filename="' . $filename . '"',
+                    'Content-Type' => $file_type['type']
+                ],
+                'body' => $file_content,
+                'timeout' => 120,
+                'sslverify' => false
+            ]);
+
+            if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 201) {
+                $media = json_decode(wp_remote_retrieve_body($response));
+                if (isset($media->id)) {
+                    $this->image_cache[$filename] = $media->id;
+                    $base_filename = str_replace('-scaled', '', $filename);
+                    $this->image_cache[$base_filename] = $media->id;
+
+                    // Keširanje rezultata na kraći period
+                    $cache_key = 'shopito_img_' . md5($filename);
+                    set_transient($cache_key, $media->id, 1 * DAY_IN_SECONDS);
+
+                    $this->logger->success("Uspešno otpremljena slika: {$filename}", [
+                        'media_id' => $media->id
+                    ]);
+                    return $media->id;
+                }
+            } else {
+                $error_message = is_wp_error($response) ? $response->get_error_message() : wp_remote_retrieve_response_code($response);
+                $this->logger->warning("Neuspeo pokušaj {$attempt} za upload slike: {$filename}", [
+                    'error' => $error_message
+                ]);
+
+                // Sačekajmo malo pre ponovnog pokušaja
+                if ($attempt < $max_attempts) {
+                    sleep(1);
+                }
             }
-        } else {
-            $error_message = is_wp_error($response) ? $response->get_error_message() : wp_remote_retrieve_response_code($response);
-            $this->log("Greška pri otpremanju slike: {$filename}", 'error', ['error' => $error_message]);
         }
 
+        $this->logger->error("Slika nije uspešno uploadovana nakon {$max_attempts} pokušaja: {$filename}");
         return false;
     }
 
