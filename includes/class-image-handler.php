@@ -23,19 +23,19 @@ class Image_Handler
     {
         // Prvo proveravamo keš za tačno ime
         if (isset($this->image_cache[$filename])) {
-            return $this->image_cache[$filename];
+            return (int)$this->image_cache[$filename]; // Osiguraj da je ID broj
         }
 
         // Proveravamo keš za verziju bez -scaled
         $base_filename = str_replace('-scaled', '', $filename);
         if (isset($this->image_cache[$base_filename])) {
-            return $this->image_cache[$base_filename];
+            return (int)$this->image_cache[$base_filename]; // Osiguraj da je ID broj
         }
 
-        // Ako nije u kešu, proveravamo API
+        // Ako nije u kešu, proveravamo API sa tačnim imenom
         $endpoint = add_query_arg([
             'search' => $filename,
-            'per_page' => 1
+            'per_page' => 5 // Povećano za bolju pretragu
         ], trailingslashit($this->settings['target_url']) . 'wp-json/wp/v2/media');
 
         $response = wp_remote_get($endpoint, [
@@ -49,12 +49,15 @@ class Image_Handler
         if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
             $media = json_decode(wp_remote_retrieve_body($response));
             foreach ($media as $item) {
-                $item_filename = basename($item->source_url);
-                if ($item_filename === $filename || str_replace('-scaled', '', $item_filename) === $base_filename) {
-                    // Keširamo obe verzije imena
-                    $this->image_cache[$filename] = $item->id;
-                    $this->image_cache[$base_filename] = $item->id;
-                    return $item->id;
+                if (isset($item->source_url)) {
+                    $item_filename = basename($item->source_url);
+                    if ($item_filename === $filename || str_replace('-scaled', '', $item_filename) === $base_filename) {
+                        // Keširamo obe verzije imena
+                        $media_id = (int)$item->id; // Osiguraj da je ID broj
+                        $this->image_cache[$filename] = $media_id;
+                        $this->image_cache[$base_filename] = $media_id;
+                        return $media_id;
+                    }
                 }
             }
         }
@@ -76,7 +79,7 @@ class Image_Handler
 
         if ($cached_id) {
             $this->log("Slika pronađena u kešu: {$filename}", 'info', ['cached_id' => $cached_id]);
-            return $cached_id;
+            return (int)$cached_id; // Osigurajmo da je ID broj
         }
 
         // Prvo proverimo da li slika već postoji
@@ -85,7 +88,7 @@ class Image_Handler
             // Keširanje rezultata na 7 dana
             set_transient($cache_key, $existing_id, 7 * DAY_IN_SECONDS);
             $this->log("Slika već postoji na ciljnom sajtu: {$filename}", 'info', ['existing_id' => $existing_id]);
-            return $existing_id;
+            return (int)$existing_id; // Osigurajmo da je ID broj
         }
 
         // Preuzimanje slike
@@ -99,6 +102,13 @@ class Image_Handler
         $file_content = file_get_contents($temp_file);
 
         @unlink($temp_file); // Odmah čistimo temp fajl
+
+        // Provera veličine fajla
+        $file_size = strlen($file_content);
+        if ($file_size > 5 * 1024 * 1024) { // 5MB limit
+            $this->log("Slika je prevelika: {$filename}, {$file_size} bytes", 'warning');
+            // Mogao bi ovde dodati kompresiju slike
+        }
 
         $endpoint = trailingslashit($this->settings['target_url']) . 'wp-json/wp/v2/media';
 
@@ -116,15 +126,22 @@ class Image_Handler
         if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 201) {
             $media = json_decode(wp_remote_retrieve_body($response));
             if (isset($media->id)) {
-                $this->image_cache[$filename] = $media->id;
+                $media_id = (int)$media->id; // Osiguraj da je ID broj
+                $this->image_cache[$filename] = $media_id;
                 // Keširanje rezultata na 7 dana
-                set_transient($cache_key, $media->id, 7 * DAY_IN_SECONDS);
-                $this->log("Uspešno otpremljena slika: {$filename}", 'success', ['media_id' => $media->id]);
-                return $media->id;
+                set_transient($cache_key, $media_id, 7 * DAY_IN_SECONDS);
+                $this->log("Uspešno otpremljena slika: {$filename}", 'success', ['media_id' => $media_id]);
+                return $media_id;
             }
         } else {
             $error_message = is_wp_error($response) ? $response->get_error_message() : wp_remote_retrieve_response_code($response);
             $this->log("Greška pri otpremanju slike: {$filename}", 'error', ['error' => $error_message]);
+
+            // Pokušajmo da dobijemo više detalja o grešci
+            if (!is_wp_error($response)) {
+                $body = wp_remote_retrieve_body($response);
+                $this->log("API odgovor za sliku: " . substr($body, 0, 255), 'error');
+            }
         }
 
         return false;
