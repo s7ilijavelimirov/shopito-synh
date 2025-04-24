@@ -372,11 +372,8 @@ class Settings
                             <tr>
                                 <td><?php echo esc_html(date_i18n('d.m.Y H:i:s', strtotime($log['timestamp']))); ?></td>
                                 <td>
-                                    <?php
-                                    $level = is_string($log['level']) ? $log['level'] : json_encode($log['level']);
-                                    ?>
-                                    <span class="log-level log-level-<?php echo esc_attr($level); ?>">
-                                        <?php echo esc_html(ucfirst($level)); ?>
+                                    <span class="log-level log-level-<?php echo esc_attr($log['level']); ?>">
+                                        <?php echo esc_html(ucfirst($log['level'])); ?>
                                     </span>
                                 </td>
                                 <td><?php echo esc_html($log['message']); ?></td>

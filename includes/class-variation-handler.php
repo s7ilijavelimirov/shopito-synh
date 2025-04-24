@@ -167,10 +167,10 @@ class Variation_Handler
 
             $variation_data['sku'] = $normalized_sku;
 
-            $this->log("Korišten postojeći SKU za varijaciju", 'info', [
+            $this->log("Korišten postojeći SKU za varijaciju", [
                 'variation_id' => $variation_obj->get_id(),
                 'sku' => $normalized_sku
-            ]);
+            ], 'info');
         } else {
             $this->log("Preskočen problematični SKU za varijaciju", 'warning', [
                 'variation_id' => $variation_obj->get_id(),
