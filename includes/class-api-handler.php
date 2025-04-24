@@ -414,12 +414,6 @@ class API_Handler
         return $product;
     }
 
-    /**
-     * Poboljšana verzija prepare_product_data koja bolje rukuje sa SKU
-     * 
-     * @param WC_Product $product WooCommerce proizvod
-     * @return array Pripremljeni podaci za API
-     */
     private function prepare_product_data($product)
     {
         $data = [
@@ -472,46 +466,12 @@ class API_Handler
         return add_query_arg($args, trailingslashit($this->settings['target_url']) . 'wp-json/wc/v3/' . $path);
     }
 
-    /**
-     * Poboljšana verzija funkcije za sinhronizaciju varijacija
-     * Sa boljim rukovanjem greškama i logikom za ponovno pokušavanje
-     * 
-     * @param int $product_id ID proizvoda na izvornom sajtu
-     * @param int $target_product_id ID proizvoda na ciljnom sajtu
-     * @return array Status sinhronizacije
-     */
     private function sync_product_variations($product_id, $target_product_id)
     {
         try {
-            $this->logger->info("Započinjem sinhronizaciju varijacija", [
-                'product_id' => $product_id,
-                'target_product_id' => $target_product_id
-            ]);
-
-            // Pozovemo metodu iz Variation_Handler klase
             $variation_result = $this->variation_handler->sync_variations($product_id, $target_product_id);
 
             if ($variation_result === false) {
-                $this->logger->error("Neuspešna sinhronizacija varijacija", [
-                    'product_id' => $product_id,
-                    'target_product_id' => $target_product_id
-                ]);
-
-                // Probajmo da generišemo varijacije direktno
-                if ($this->generate_variations_directly($product_id, $target_product_id)) {
-                    $this->logger->info("Uspešno generisanje varijacija alternativnom metodom", [
-                        'product_id' => $product_id,
-                        'target_product_id' => $target_product_id
-                    ]);
-
-                    $variations_count = $this->check_variations_count($target_product_id);
-                    return [
-                        'name' => 'variations',
-                        'status' => 'completed',
-                        'message' => "Sinhronizovano {$variations_count} varijacija (alt. metod)"
-                    ];
-                }
-
                 return [
                     'name' => 'variations',
                     'status' => 'error',
@@ -521,47 +481,12 @@ class API_Handler
 
             $variations_count = $this->check_variations_count($target_product_id);
 
-            if ($variations_count === 0) {
-                $this->logger->warning("Varijacije su generisane, ali count vraća 0", [
-                    'product_id' => $product_id,
-                    'target_product_id' => $target_product_id
-                ]);
-
-                // Pokušajmo da sačekamo malo i proverimo ponovo
-                sleep(2); // Čekaj 2 sekunde
-                $variations_count = $this->check_variations_count($target_product_id);
-
-                if ($variations_count === 0) {
-                    // Probajmo da generišemo varijacije ponovo
-                    $this->logger->info("Pokušavam ponovo generisati varijacije", [
-                        'product_id' => $product_id,
-                        'target_product_id' => $target_product_id
-                    ]);
-
-                    if ($this->generate_variations_directly($product_id, $target_product_id)) {
-                        $variations_count = $this->check_variations_count($target_product_id);
-                    }
-                }
-            }
-
-            $this->logger->success("Završena sinhronizacija varijacija", [
-                'product_id' => $product_id,
-                'target_product_id' => $target_product_id,
-                'variations_count' => $variations_count
-            ]);
-
             return [
                 'name' => 'variations',
                 'status' => 'completed',
                 'message' => "Sinhronizovano {$variations_count} varijacija"
             ];
         } catch (\Exception $e) {
-            $this->logger->error("Izuzetak pri sinhronizaciji varijacija", [
-                'product_id' => $product_id,
-                'target_product_id' => $target_product_id,
-                'exception' => $e->getMessage()
-            ]);
-
             return [
                 'name' => 'variations',
                 'status' => 'error',
@@ -569,58 +494,7 @@ class API_Handler
             ];
         }
     }
-    /**
-     * Direktno generiše varijacije na ciljnom sajtu
-     * Alternativna metoda u slučaju da standardni način ne uspe
-     * 
-     * @param int $product_id ID proizvoda na izvornom sajtu
-     * @param int $target_product_id ID proizvoda na ciljnom sajtu
-     * @return bool Uspeh operacije
-     */
-    private function generate_variations_directly($product_id, $target_product_id)
-    {
-        $this->logger->info("Pokušavam direktno generisati varijacije", [
-            'product_id' => $product_id,
-            'target_product_id' => $target_product_id
-        ]);
 
-        $endpoint = $this->build_api_endpoint("products/{$target_product_id}/variations/generate");
-
-        $response = $this->make_api_request($endpoint, [
-            'method' => 'POST',
-            'headers' => [
-                'Content-Type' => 'application/json'
-            ],
-            'body' => json_encode(['delete' => false]),
-            'timeout' => 60,
-            'sslverify' => false
-        ], 'POST');
-
-        if (is_wp_error($response)) {
-            $this->logger->error("Greška pri direktnom generisanju varijacija", [
-                'error' => $response->get_error_message()
-            ]);
-            return false;
-        }
-
-        $response_code = wp_remote_retrieve_response_code($response);
-        if ($response_code >= 200 && $response_code < 300) {
-            $this->logger->success("Uspešno direktno generisane varijacije", [
-                'product_id' => $product_id,
-                'target_product_id' => $target_product_id,
-                'response_code' => $response_code
-            ]);
-            return true;
-        }
-
-        $this->logger->error("Neuspešno direktno generisanje varijacija", [
-            'product_id' => $product_id,
-            'target_product_id' => $target_product_id,
-            'response_code' => $response_code
-        ]);
-
-        return false;
-    }
     private function check_variations_count($product_id)
     {
         $endpoint = $this->build_api_endpoint("products/{$product_id}/variations", [
@@ -697,61 +571,6 @@ class API_Handler
 
         return $categories;
     }
-    /**
-     * Generira jedinstveni SKU za varijaciju ako postoji problem s dupliciranjem
-     * 
-     * @param string $base_sku Osnovni SKU proizvoda
-     * @param WC_Product_Variation $variation Varijacija proizvoda
-     * @param int $variation_position Pozicija varijacije (za generiranje jedinstvenog sufiksa)
-     * @return string Jedinstveni SKU
-     */
-    private function generate_unique_variation_sku($base_sku, $variation, $variation_position = 0)
-    {
-        // Ako varijacija ima već jedinstveni SKU, koristi njega
-        $variation_sku = $variation->get_sku();
-        if (!empty($variation_sku) && $variation_sku !== $base_sku) {
-            return $this->normalize_sku($variation_sku);
-        }
-
-        // Inače, generiraj jedinstveni SKU na osnovu atributa ili pozicije
-        $variation_id = $variation->get_id();
-        $attributes = $variation->get_attributes();
-
-        // Pokušaj generirati SKU na osnovu atributa
-        $attribute_suffix = '';
-        foreach ($attributes as $attr_name => $attr_value) {
-            // Uzmi samo prvi znak ili broj svakog atributa
-            $attr_name_clean = sanitize_title($attr_name);
-            $attr_value_clean = sanitize_title($attr_value);
-
-            if (!empty($attr_value_clean)) {
-                // Uzmi prvo slovo ili broj (alfanumerički znak)
-                preg_match('/[a-z0-9]/i', $attr_value_clean, $matches);
-                if (!empty($matches[0])) {
-                    $attribute_suffix .= strtoupper($matches[0]);
-                }
-            }
-        }
-
-        // Ako nismo mogli generirati sufiks iz atributa, koristi poziciju i ID
-        if (empty($attribute_suffix)) {
-            $attribute_suffix = $variation_position . substr($variation_id, -2);
-        }
-
-        // Ograniči dužinu sufiksa na 5 znakova
-        $attribute_suffix = substr($attribute_suffix, 0, 5);
-
-        // Generiraj finalni SKU
-        $unique_sku = $base_sku . '-' . $attribute_suffix;
-
-        $this->logger->info("Generiran jedinstveni SKU za varijaciju", [
-            'base_sku' => $base_sku,
-            'variation_id' => $variation_id,
-            'generated_sku' => $unique_sku
-        ]);
-
-        return $unique_sku;
-    }
     public function convert_price_to_bam($price)
     {
         if (empty($price) || !is_numeric($price)) {
@@ -766,15 +585,8 @@ class API_Handler
             number_format($final_price, 2, '.', '');
     }
 
-    /**
-     * Poboljšana verzija check_if_product_exists koja koristi više metoda za pronalaženje proizvoda
-     * 
-     * @param WC_Product $product WooCommerce proizvod
-     * @return int|false ID proizvoda na ciljnom sajtu ili false ako nije pronađen
-     */
     private function check_if_product_exists($product)
     {
-        // 1. Prvo probaj sa meta podatkom
         $synced_id = get_post_meta($product->get_id(), '_synced_product_id', true);
 
         if ($synced_id) {
@@ -782,52 +594,23 @@ class API_Handler
             $response = wp_remote_get($endpoint, ['sslverify' => false]);
 
             if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
-                $this->logger->info("Proizvod pronađen po meta podatku _synced_product_id", [
-                    'product_id' => $product->get_id(),
-                    'synced_id' => $synced_id
-                ]);
                 return $synced_id;
-            } else {
-                $this->logger->warning("Meta _synced_product_id postoji ali proizvod nije pronađen na ciljnom sajtu", [
-                    'product_id' => $product->get_id(),
-                    'synced_id' => $synced_id
-                ]);
-                // Brišemo nevalidni meta podatak
-                delete_post_meta($product->get_id(), '_synced_product_id');
             }
         }
 
-        // 2. Probaj po SKU
-        $sku = $product->get_sku();
-        if (!empty($sku)) {
-            $target_id = $this->find_product_by_sku($sku);
-            if ($target_id) {
-                $this->logger->info("Proizvod pronađen po SKU", [
-                    'product_id' => $product->get_id(),
-                    'sku' => $sku,
-                    'target_id' => $target_id
-                ]);
-                update_post_meta($product->get_id(), '_synced_product_id', $target_id);
-                return $target_id;
+        if ($sku = $product->get_sku()) {
+            $endpoint = $this->build_api_endpoint("products", ['sku' => $sku]);
+            $response = wp_remote_get($endpoint, ['sslverify' => false]);
+
+            if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
+                $products = json_decode(wp_remote_retrieve_body($response));
+                if (!empty($products)) {
+                    $remote_product = reset($products);
+                    update_post_meta($product->get_id(), '_synced_product_id', $remote_product->id);
+                    return $remote_product->id;
+                }
             }
         }
-
-        // 3. Probaj po imenu proizvoda
-        $target_id = $this->find_product_by_name($product->get_name());
-        if ($target_id) {
-            $this->logger->info("Proizvod pronađen po imenu", [
-                'product_id' => $product->get_id(),
-                'name' => $product->get_name(),
-                'target_id' => $target_id
-            ]);
-            update_post_meta($product->get_id(), '_synced_product_id', $target_id);
-            return $target_id;
-        }
-
-        $this->logger->info("Proizvod nije pronađen na ciljnom sajtu, biće kreiran novi", [
-            'product_id' => $product->get_id(),
-            'name' => $product->get_name()
-        ]);
 
         return false;
     }
@@ -1185,32 +968,8 @@ class API_Handler
 
         return !is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200;
     }
-
     /**
-     * Normalizuje SKU vrednost za pouzdanije poređenje
-     * 
-     * @param string $sku SKU vrednost koja se normalizuje
-     * @return string Normalizovana SKU vrednost
-     */
-    private function normalize_sku($sku)
-    {
-        if (empty($sku)) {
-            return '';
-        }
-
-        // Ukloni whitespace, konvertuj u mala slova
-        $sku = strtolower(trim($sku));
-
-        // Ukloni specijalne znakove koje neki sistem može dodati
-        $sku = preg_replace('/[^a-z0-9\-_.]/', '', $sku);
-
-        return $sku;
-    }
-    /**
-     * Poboljšana verzija find_product_by_sku koja toleriše problematične SKU vrednosti
-     * 
-     * @param string $sku SKU vrednost za pretragu
-     * @return int|false ID proizvoda ili false ako nije pronađen
+     * Pronalazi proizvod po SKU na ciljnom sajtu
      */
     private function find_product_by_sku($sku)
     {
@@ -1218,92 +977,21 @@ class API_Handler
             return false;
         }
 
-        try {
-            $normalized_sku = $this->normalize_sku($sku);
+        $endpoint = $this->build_api_endpoint("products", ['sku' => $sku]);
+        $response = wp_remote_get($endpoint, ['sslverify' => false, 'timeout' => 30]);
 
-            // Logiraj normalizaciju za debug
-            $this->logger->info("Pretraga proizvoda po SKU", [
-                'original_sku' => $sku,
-                'normalized_sku' => $normalized_sku
-            ]);
-
-            $endpoint = $this->build_api_endpoint("products", ['sku' => $normalized_sku]);
-            $response = wp_remote_get($endpoint, ['sslverify' => false, 'timeout' => 30]);
-
-            if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
-                $products = json_decode(wp_remote_retrieve_body($response));
-
-                if (!empty($products)) {
-                    // Ako imamo više rezultata, proveri koji najbolje odgovara
-                    if (count($products) > 1) {
-                        $this->logger->warning("Pronađeno više proizvoda sa istim SKU: {$sku}", [
-                            'count' => count($products)
-                        ]);
-
-                        // Pokušaj naći proizvod sa istim imenom ako je moguće
-                        global $product; // Koristimo trenutni proizvod iz konteksta
-                        if ($product) {
-                            $product_name = $product->get_name();
-                            foreach ($products as $remote_product) {
-                                if (strcasecmp($remote_product->name, $product_name) === 0) {
-                                    $this->logger->info("Pronađen proizvod sa istim SKU i imenom", [
-                                        'id' => $remote_product->id,
-                                        'name' => $remote_product->name
-                                    ]);
-                                    return $remote_product->id;
-                                }
-                            }
-                        }
-                    }
-
-                    $remote_product = reset($products);
-                    $this->logger->info("Pronađen proizvod po SKU", [
-                        'id' => $remote_product->id,
-                        'name' => $remote_product->name
-                    ]);
-                    return $remote_product->id;
-                }
-            } else {
-                $error_message = is_wp_error($response) ? $response->get_error_message() : wp_remote_retrieve_response_code($response);
-                $this->logger->warning("Problem pri pretrazi po SKU: {$sku}", [
-                    'error' => $error_message
-                ]);
+        if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
+            $products = json_decode(wp_remote_retrieve_body($response));
+            if (!empty($products)) {
+                $remote_product = reset($products);
+                return $remote_product->id;
             }
-        } catch (\Exception $e) {
-            $this->logger->error("Izuzetak pri pretrazi po SKU: {$sku}", [
-                'exception' => $e->getMessage()
-            ]);
         }
 
         return false;
     }
     /**
-     * Normalizuje vrednost atributa za pouzdanije poređenje
-     * 
-     * @param string $value Vrednost atributa
-     * @return string Normalizovana vrednost
-     */
-    private function normalize_attribute_value($value)
-    {
-        if (empty($value)) {
-            return '';
-        }
-
-        // Konvertuj u mala slova i trimuj
-        $value = strtolower(trim($value));
-
-        // Zameni razmake i crtice
-        $value = str_replace(['-', '_', ' '], '', $value);
-
-        // Ukloni akcente i dijakritike
-        if (function_exists('remove_accents')) {
-            $value = remove_accents($value);
-        }
-
-        return $value;
-    }
-    /**
-     * Poboljšana verzija find_matching_target_variation sa naprednim podudaranjem atributa
+     * Pronalazi odgovarajuću varijaciju na ciljnom sajtu
      * 
      * @param WC_Product_Variation $variation Varijacija sa izvornog sajta
      * @param array $target_variations Varijacije sa ciljnog sajta
@@ -1311,149 +999,47 @@ class API_Handler
      */
     private function find_matching_target_variation($variation, $target_variations)
     {
-        $this->logger->info("Tražim odgovarajuću varijaciju", [
-            'variation_id' => $variation->get_id()
-        ]);
-
-        // 1. Prvo pokušaj sa SKU (normalizovanim)
+        // Prvo pokušajte pronalaženje po SKU
         $sku = $variation->get_sku();
         if (!empty($sku)) {
-            $normalized_sku = $this->normalize_sku($sku);
             foreach ($target_variations as $target_variation) {
-                if (
-                    isset($target_variation->sku) &&
-                    $this->normalize_sku($target_variation->sku) === $normalized_sku
-                ) {
-                    $this->logger->info("Varijacija pronađena po SKU", [
-                        'source_id' => $variation->get_id(),
-                        'target_id' => $target_variation->id,
-                        'sku' => $sku
-                    ]);
+                if (isset($target_variation->sku) && $target_variation->sku === $sku) {
                     return $target_variation;
                 }
             }
         }
 
-        // 2. Pokušaj sa meta synced_variation_id
+        // Ako SKU ne uspe, pokušajte sa metom synced_variation_id
         $synced_id = get_post_meta($variation->get_id(), '_synced_variation_id', true);
         if (!empty($synced_id)) {
             foreach ($target_variations as $target_variation) {
                 if ($target_variation->id == $synced_id) {
-                    $this->logger->info("Varijacija pronađena po synced_variation_id", [
-                        'source_id' => $variation->get_id(),
-                        'target_id' => $synced_id
-                    ]);
                     return $target_variation;
                 }
             }
         }
 
-        // 3. Poboljšano podudaranje atributa - pamti najbolji kandidat
+        // Ako sve ostalo ne uspeva, pokušajte podudaranje atributa
         $variation_attributes = $variation->get_attributes();
-        $best_match = null;
-        $best_score = 0;
-
-        // Logiraj atribute za debug
-        $this->logger->info("Atributi izvornog proizvoda", [
-            'variation_id' => $variation->get_id(),
-            'attributes' => $variation_attributes
-        ]);
-
         foreach ($target_variations as $target_variation) {
-            $match_score = 0;
-            $total_attributes = count($target_variation->attributes);
-
-            // Logiraj atribute ciljne varijacije za debug
-            $target_attrs_debug = [];
-            foreach ($target_variation->attributes as $attr) {
-                $target_attrs_debug[] = [
-                    'name' => $attr->name,
-                    'option' => $attr->option
-                ];
-            }
-
-            $this->logger->info("Provera atributa ciljne varijacije", [
-                'target_id' => $target_variation->id,
-                'attributes' => $target_attrs_debug
-            ]);
+            $matches = true;
 
             foreach ($target_variation->attributes as $target_attr) {
-                // Različite varijante imena atributa koje ćemo pokušati
-                $attr_name_variants = [
-                    'attribute_' . sanitize_title($target_attr->name),
-                    'pa_' . sanitize_title($target_attr->name),
-                    sanitize_title($target_attr->name),
-                    'attribute_pa_' . sanitize_title($target_attr->name)
-                ];
+                $attr_name = 'attribute_' . sanitize_title($target_attr->name);
 
-                $source_value = null;
-                $found = false;
-
-                // Pokušaj sve varijante imena atributa
-                foreach ($attr_name_variants as $attr_name) {
-                    if (isset($variation_attributes[$attr_name])) {
-                        $source_value = $variation_attributes[$attr_name];
-                        $found = true;
-                        break;
-                    }
-                }
-
-                // Ako je atribut pronađen, uporedi vrednosti
-                if ($found) {
-                    $normalized_source = $this->normalize_attribute_value($source_value);
-                    $normalized_target = $this->normalize_attribute_value($target_attr->option);
-
-                    if ($normalized_source === $normalized_target) {
-                        $match_score++;
-                        $this->logger->info("Podudaranje atributa", [
-                            'attr_name' => $target_attr->name,
-                            'source_value' => $source_value,
-                            'target_value' => $target_attr->option
-                        ]);
-                    }
+                if (
+                    !isset($variation_attributes[$attr_name]) ||
+                    strtolower($variation_attributes[$attr_name]) !== strtolower($target_attr->option)
+                ) {
+                    $matches = false;
+                    break;
                 }
             }
 
-            // Ako je ova varijacija bolja od prethodne najbolje, zapamti je
-            if ($match_score > $best_score) {
-                $best_score = $match_score;
-                $best_match = $target_variation;
-
-                $this->logger->info("Novi najbolji kandidat za varijaciju", [
-                    'target_id' => $target_variation->id,
-                    'score' => "{$match_score}/{$total_attributes}"
-                ]);
+            if ($matches) {
+                return $target_variation;
             }
         }
-
-        // Prihvati najbolji meč samo ako ima bar 70% podudaranja atributa
-        if ($best_match && $best_score > 0) {
-            $total_attrs = count($best_match->attributes);
-            $match_percentage = ($best_score / $total_attrs) * 100;
-
-            if ($match_percentage >= 70) {
-                $this->logger->info("Pronađena najbolja varijacija po atributima", [
-                    'source_id' => $variation->get_id(),
-                    'target_id' => $best_match->id,
-                    'match_percentage' => round($match_percentage, 2) . '%'
-                ]);
-
-                // Zapamti ID varijacije za buduće sinhronizacije
-                update_post_meta($variation->get_id(), '_synced_variation_id', $best_match->id);
-
-                return $best_match;
-            } else {
-                $this->logger->warning("Nedovoljno podudaranje atributa", [
-                    'source_id' => $variation->get_id(),
-                    'target_id' => $best_match->id,
-                    'match_percentage' => round($match_percentage, 2) . '%'
-                ]);
-            }
-        }
-
-        $this->logger->warning("Nije pronađena odgovarajuća varijacija", [
-            'source_id' => $variation->get_id()
-        ]);
 
         return null;
     }
