@@ -123,23 +123,10 @@ class Variation_Handler
     private function prepare_variation_data($variation_obj, $target_variation)
     {
         $parent_product = wc_get_product($variation_obj->get_parent_id());
-        $parent_sku = $parent_product ? $parent_product->get_sku() : '';
-        $variation_sku = $variation_obj->get_sku();
-
-        // Ako varijacija ima isti SKU kao i parent, dodaj sufiks
-        if (!empty($variation_sku) && $variation_sku === $parent_sku) {
-            $variation_sku = $variation_sku . '-' . $variation_obj->get_id();
-        }
-
-        // Dodaj random broj ako je SKU prazan
-        if (empty($variation_sku)) {
-            $variation_sku = 'var-' . $variation_obj->get_id() . '-' . rand(1000, 9999);
-        }
-
         $variation_data = [
             'regular_price' => $this->api_handler->convert_price_to_bam($variation_obj->get_regular_price()),
             'sale_price' => $this->api_handler->convert_price_to_bam($variation_obj->get_sale_price()),
-            'sku' => $variation_sku,
+            'sku' => $variation_obj->get_sku(),
             'stock_quantity' => $variation_obj->get_stock_quantity(),
             'manage_stock' => $variation_obj->get_manage_stock(),
             'stock_status' => $variation_obj->get_stock_status(),
@@ -161,10 +148,6 @@ class Variation_Handler
                 [
                     'key' => '_minimum_quantity',
                     'value' => get_post_meta($variation_obj->get_id(), '_minimum_quantity', true)
-                ],
-                [
-                    'key' => '_original_variation_id',
-                    'value' => $variation_obj->get_id()
                 ]
             ]
         ];
@@ -185,26 +168,18 @@ class Variation_Handler
         // Dodavanje slika
         $variation_images = $this->image_handler->prepare_variation_images($variation_obj->get_id());
         if (!empty($variation_images)) {
-            if (isset($variation_images['main']) && is_numeric($variation_images['main'])) {
-                $variation_data['image'] = ['id' => (int)$variation_images['main']];
+            if (isset($variation_images['main'])) {
+                $variation_data['image'] = ['id' => $variation_images['main']];
             }
             if (isset($variation_images['gallery']) && !empty($variation_images['gallery'])) {
-                $gallery_ids = [];
-                foreach ($variation_images['gallery'] as $gallery_id) {
-                    if (is_numeric($gallery_id)) {
-                        $gallery_ids[] = (int)$gallery_id;
-                    }
-                }
-                if (!empty($gallery_ids)) {
-                    $variation_data['meta_data'][] = [
-                        'key' => 'rtwpvg_images',
-                        'value' => $gallery_ids
-                    ];
-                    $variation_data['meta_data'][] = [
-                        'key' => '_gallery_images',
-                        'value' => $gallery_ids
-                    ];
-                }
+                $variation_data['meta_data'][] = [
+                    'key' => 'rtwpvg_images',
+                    'value' => $variation_images['gallery']
+                ];
+                $variation_data['meta_data'][] = [
+                    'key' => '_gallery_images',
+                    'value' => $variation_images['gallery']
+                ];
             }
         }
 

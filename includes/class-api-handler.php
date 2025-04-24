@@ -110,10 +110,6 @@ class API_Handler
         try {
             // 1. Inicijalna provera proizvoda
             $product = $this->validate_and_prepare_product($product_id);
-            if (!$product) {
-                throw new \Exception('Proizvod nije pronađen');
-            }
-
             $existing_product_id = $this->check_if_product_exists($product);
 
             $logger->info("Product validation complete", [
@@ -121,6 +117,7 @@ class API_Handler
                 'target_id' => $existing_product_id
             ]);
 
+            // 2. Batch procesiranje slika
             // 2. Batch procesiranje slika (samo ako nije skip_images)
             $images = [];
             if (!$skip_images) {
@@ -148,59 +145,22 @@ class API_Handler
 
             // 3. Priprema i slanje proizvoda
             $data = $this->prepare_product_data($product);
-
-            // Provera da li su svi ID-jevi slika brojevi
-            if (!empty($images)) {
-                foreach ($images as $index => $image) {
-                    if (isset($image['id']) && !is_numeric($image['id'])) {
-                        $logger->warning("Removing invalid image ID", ['index' => $index, 'id' => $image['id']]);
-                        unset($images[$index]);
-                    } else if (isset($image['id'])) {
-                        // Osiguraj da je ID broj
-                        $images[$index]['id'] = (int)$image['id'];
-                    }
-                }
-
-                // Reindeksiranje niza
-                $images = array_values($images);
-            }
-
             $data['images'] = $images;
 
-            // Logujemo podatke za debugging
-            $logger->info("Prepared product data", [
-                'name' => $data['name'],
-                'sku' => $data['sku'],
-                'type' => $data['type'],
-                'image_count' => count($data['images'])
-            ]);
-
-            // Pre nego što pošaljemo zahtev, proveravamo da li već postoji proizvod
-            if ($existing_product_id) {
-                // Za postojeći proizvod, moramo da ažuriramo samo relevantne podatke
-                $method = 'PUT';
-                $endpoint = $this->build_api_endpoint("products/{$existing_product_id}");
-                $logger->info("Updating existing product", ['product_id' => $existing_product_id]);
-            } else {
-                // Za novi proizvod, šaljemo POST zahtev
-                $method = 'POST';
-                $endpoint = $this->build_api_endpoint("products");
-                $logger->info("Creating new product");
-            }
+            $endpoint = $this->build_api_endpoint($existing_product_id ? "products/{$existing_product_id}" : "products");
+            $method = $existing_product_id ? 'PUT' : 'POST';
 
             $logger->info("Sending product data to API", [
                 'endpoint' => $endpoint,
                 'method' => $method
             ]);
 
-            $auth_header = 'Basic ' . base64_encode($this->settings['username'] . ':' . $this->settings['password']);
-
             $response = $this->make_api_request($endpoint, [
                 'headers' => [
                     'Content-Type' => 'application/json',
-                    'Authorization' => $auth_header
+                    'Authorization' => 'Basic ' . base64_encode($this->settings['username'] . ':' . $this->settings['password'])
                 ],
-                'body' => json_encode($data, JSON_UNESCAPED_UNICODE),
+                'body' => json_encode($data),
                 'timeout' => 600,
                 'sslverify' => false
             ], $method);
@@ -334,18 +294,11 @@ class API_Handler
                 if (isset($image_urls[$image_id])) {
                     $image_url = $image_urls[$image_id];
                     if ($uploaded_id = $this->image_handler->upload_image($image_url)) {
-                        // Dodaj proveru da li je ID samo broj ili objekat/string
-                        if (is_numeric($uploaded_id)) {
-                            $images[] = [
-                                'id' => (int)$uploaded_id,
-                                'position' => $position
-                            ];
-                        } else {
-                            $this->logger->error("Nevažeći ID slike", [
-                                'image_id' => $uploaded_id,
-                                'image_url' => $image_url
-                            ]);
-                        }
+                        $images[] = [
+                            'id' => $uploaded_id,
+                            'src' => $image_url,
+                            'position' => $position
+                        ];
                     }
                 }
             }
@@ -377,6 +330,7 @@ class API_Handler
             'description' => $product->get_description(),
             'short_description' => $product->get_short_description(),
             'status' => 'draft',
+            'sku' => $product->get_sku(),
             'type' => $product->get_type(),
             'tags' => $this->get_product_tags($product),
             'categories' => $this->get_product_categories($product),
@@ -386,58 +340,11 @@ class API_Handler
             'stock_status' => $product->get_stock_status()
         ];
 
-        // Dodajemo SKU samo ako nije prazan
-        $sku = $product->get_sku();
-        if (!empty($sku)) {
-            $data['sku'] = $sku;
-        } else {
-            // Ako je prazan, generišemo random SKU
-            $data['sku'] = 'prod-' . $product->get_id() . '-' . rand(1000, 9999);
-        }
-
         // Dodajemo manage_stock i stock_quantity ako je manage_stock uključen
         $manage_stock = $product->get_manage_stock();
         if ($manage_stock) {
             $data['manage_stock'] = true;
-            $data['stock_quantity'] = (int)$product->get_stock_quantity();
-        }
-
-        // Dodajemo dimenzije ako postoje
-        $length = $product->get_length();
-        $width = $product->get_width();
-        $height = $product->get_height();
-
-        if ($length > 0 || $width > 0 || $height > 0) {
-            $data['dimensions'] = [
-                'length' => (string)$length,
-                'width' => (string)$width,
-                'height' => (string)$height
-            ];
-        }
-
-        // Dodajemo težinu ako postoji
-        $weight = $product->get_weight();
-        if ($weight > 0) {
-            $data['weight'] = (string)$weight;
-        }
-
-        // Napredne opcije za SEO i vidljivost
-        $data['catalog_visibility'] = $product->get_catalog_visibility();
-        $data['featured'] = $product->is_featured();
-
-        // Za varijabilne proizvode, postavimo default atribute
-        if ($product->get_type() === 'variable') {
-            $default_attributes = $product->get_default_attributes();
-            if (!empty($default_attributes)) {
-                $data['default_attributes'] = [];
-                foreach ($default_attributes as $attribute_name => $value) {
-                    $attribute_slug = str_replace('pa_', '', $attribute_name);
-                    $data['default_attributes'][] = [
-                        'name' => $attribute_slug,
-                        'option' => $value
-                    ];
-                }
-            }
+            $data['stock_quantity'] = $product->get_stock_quantity();
         }
 
         return $data;
@@ -1004,11 +911,6 @@ class API_Handler
         if (!empty($sku)) {
             foreach ($target_variations as $target_variation) {
                 if (isset($target_variation->sku) && $target_variation->sku === $sku) {
-                    $this->logger->info("Pronađena varijacija po SKU", [
-                        'source_id' => $variation->get_id(),
-                        'target_id' => $target_variation->id,
-                        'sku' => $sku
-                    ]);
                     return $target_variation;
                 }
             }
@@ -1019,11 +921,6 @@ class API_Handler
         if (!empty($synced_id)) {
             foreach ($target_variations as $target_variation) {
                 if ($target_variation->id == $synced_id) {
-                    $this->logger->info("Pronađena varijacija po synced ID", [
-                        'source_id' => $variation->get_id(),
-                        'target_id' => $target_variation->id,
-                        'synced_id' => $synced_id
-                    ]);
                     return $target_variation;
                 }
             }
@@ -1031,59 +928,25 @@ class API_Handler
 
         // Ako sve ostalo ne uspeva, pokušajte podudaranje atributa
         $variation_attributes = $variation->get_attributes();
-
         foreach ($target_variations as $target_variation) {
-            if (!isset($target_variation->attributes) || empty($target_variation->attributes)) {
-                continue;
-            }
-
             $matches = true;
-            $match_count = 0;
 
             foreach ($target_variation->attributes as $target_attr) {
-                if (!isset($target_attr->name) || !isset($target_attr->option)) {
-                    continue;
-                }
-
-                $found_match = false;
                 $attr_name = 'attribute_' . sanitize_title($target_attr->name);
 
-                if (isset($variation_attributes[$attr_name])) {
-                    $source_value = $variation_attributes[$attr_name];
-
-                    // Direktno poređenje
-                    if (strcasecmp($source_value, $target_attr->option) === 0) {
-                        $found_match = true;
-                        $match_count++;
-                    }
-                    // Pokušamo sa slug-matching
-                    else if (sanitize_title($source_value) === sanitize_title($target_attr->option)) {
-                        $found_match = true;
-                        $match_count++;
-                    }
-                }
-
-                if (!$found_match) {
+                if (
+                    !isset($variation_attributes[$attr_name]) ||
+                    strtolower($variation_attributes[$attr_name]) !== strtolower($target_attr->option)
+                ) {
                     $matches = false;
                     break;
                 }
             }
 
-            // Mora biti minimum jedan atribut i svi moraju da se poklapaju
-            if ($matches && $match_count > 0 && $match_count === count($target_variation->attributes)) {
-                $this->logger->info("Pronađena varijacija po atributima", [
-                    'source_id' => $variation->get_id(),
-                    'target_id' => $target_variation->id,
-                    'match_count' => $match_count
-                ]);
+            if ($matches) {
                 return $target_variation;
             }
         }
-
-        $this->logger->warning("Nije pronađena odgovarajuća varijacija", [
-            'source_id' => $variation->get_id(),
-            'attributes' => json_encode($variation_attributes)
-        ]);
 
         return null;
     }
