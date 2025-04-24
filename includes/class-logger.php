@@ -38,9 +38,9 @@ class Logger
     public function set_enabled($enabled)
     {
         $this->enabled = $enabled;
-        $settings = get_option('shopito_sync_settings', []);
-        $settings['enable_logging'] = $enabled ? 'yes' : 'no';
-        update_option('shopito_sync_settings', $settings);
+        // $settings = get_option('shopito_sync_settings', []);
+        // $settings['enable_logging'] = $enabled ? 'yes' : 'no';
+        // update_option('shopito_sync_settings', $settings);
     }
 
     public function log($message, $level = 'info', $context = [])

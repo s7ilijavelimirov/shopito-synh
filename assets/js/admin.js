@@ -273,7 +273,7 @@ jQuery(document).ready(function ($) {
                     showMessage(statusDiv, response.data.message, 'success');
                     setTimeout(() => {
                         location.reload();
-                    }, 2000);
+                    }, 1000);
                 } else {
                     handleAjaxError(response.data || 'Nepoznata greška', statusDiv);
                 }
@@ -365,7 +365,7 @@ jQuery(document).ready(function ($) {
                     showMessage(statusDiv, response.data.message, 'success');
                     setTimeout(() => {
                         location.reload();
-                    }, 2000);
+                    }, 1000);
                 } else {
                     handleAjaxError(response.data || 'Nepoznata greška', statusDiv);
                 }
