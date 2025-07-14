@@ -14,6 +14,70 @@ class Image_Handler
         $this->logger = Logger::get_instance();
     }
     /**
+     * Batch pretraga slika na ciljnom sajtu
+     */
+    private function batch_search_images($filenames, $product_id = null)
+    {
+        $batch_size = 15;
+        $found_images = [];
+
+        foreach (array_chunk($filenames, $batch_size) as $batch) {
+            $search_terms = implode(' OR ', array_map(function ($filename) {
+                return '"' . pathinfo($filename, PATHINFO_FILENAME) . '"';
+            }, $batch));
+
+            $endpoint = add_query_arg([
+                'search' => $search_terms,
+                'per_page' => $batch_size * 2
+            ], trailingslashit($this->settings['target_url']) . 'wp-json/wp/v2/media');
+
+            $response = wp_remote_get($endpoint, [
+                'headers' => ['Authorization' => 'Basic ' . base64_encode($this->settings['username'] . ':' . $this->settings['password'])],
+                'sslverify' => false,
+                'timeout' => 30
+            ]);
+
+            if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
+                $media_items = json_decode(wp_remote_retrieve_body($response));
+
+                foreach ($media_items as $item) {
+                    $item_filename = basename($item->source_url);
+                    foreach ($batch as $original_filename) {
+                        if (
+                            $item_filename === $original_filename ||
+                            str_replace('-scaled', '', $item_filename) === str_replace('-scaled', '', $original_filename)
+                        ) {
+                            if (!$product_id || $this->is_image_attached_to_product($item->id, $product_id)) {
+                                $found_images[$original_filename] = $item->id;
+                                $this->image_cache[$original_filename] = $item->id;
+                                self::$global_image_cache[$original_filename] = $item->id;
+                            }
+                        }
+                    }
+                }
+            }
+            usleep(100000); // 0.1s pauza između batch-eva
+        }
+
+        return $found_images;
+    }
+    private function batch_upload_images($image_urls)
+    {
+        $uploaded_ids = [];
+        $batch_size = 3; // Smanjeno jer upload traje duže
+
+        foreach (array_chunk($image_urls, $batch_size) as $batch) {
+            foreach ($batch as $url) {
+                if ($uploaded_id = $this->upload_image($url)) {
+                    $uploaded_ids[$url] = $uploaded_id;
+                }
+            }
+            usleep(200000); // 0.2s pauza između batch-eva
+        }
+
+        return $uploaded_ids;
+    }
+    /**
      * Proverava da li je slika stvarno dodeljena proizvodu
      */
     private function is_image_attached_to_product($image_id, $product_id)
@@ -324,32 +388,84 @@ class Image_Handler
         return $images;
     }
 
-    public function prepare_variation_images($variation_id)
+    public function prepare_variation_images($variation_id, $target_product_id = null)
     {
         $variation = wc_get_product($variation_id);
-        if (!$variation) {
-            return [];
-        }
+        if (!$variation) return [];
 
         $images = [];
+        $all_urls = [];
 
-        // Glavna slika varijacije
+        // Skupljamo sve URL-ove slika
         if ($image_id = $variation->get_image_id()) {
             if ($image_url = wp_get_attachment_url($image_id)) {
-                if ($uploaded_id = $this->upload_image($image_url)) {
+                $all_urls['main'] = $image_url;
+            }
+        }
+
+        // ISPRAVKA: Inicijalizujemo gallery kao prazan niz
+        $all_urls['gallery'] = [];
+
+        $gallery_images = get_post_meta($variation_id, 'rtwpvg_images', true);
+        if (!empty($gallery_images) && is_array($gallery_images)) {
+            foreach ($gallery_images as $gallery_image_id) {
+                if ($image_url = wp_get_attachment_url($gallery_image_id)) {
+                    $all_urls['gallery'][] = $image_url;
+                }
+            }
+        }
+
+        if (empty($all_urls)) return [];
+
+        // Batch pretraga za sve slike odjednom
+        $all_filenames = [];
+        if (isset($all_urls['main'])) {
+            $all_filenames[] = basename(parse_url($all_urls['main'], PHP_URL_PATH));
+        }
+        // ISPRAVKA: Provera da gallery nije prazan
+        if (!empty($all_urls['gallery'])) {
+            foreach ($all_urls['gallery'] as $url) {
+                $all_filenames[] = basename(parse_url($url, PHP_URL_PATH));
+            }
+        }
+
+        // Ako nema slika, vraćamo prazan niz
+        if (empty($all_filenames)) return [];
+
+        $found_images = $this->batch_search_images($all_filenames, $target_product_id);
+        // Procesiramo glavnu sliku
+        if (isset($all_urls['main'])) {
+            $filename = basename(parse_url($all_urls['main'], PHP_URL_PATH));
+            if (isset($found_images[$filename])) {
+                $images['main'] = $found_images[$filename];
+            } else {
+                if ($uploaded_id = $this->upload_image($all_urls['main'])) {
                     $images['main'] = $uploaded_id;
                 }
             }
         }
 
-        // RTWPVG galerija
-        $gallery_images = get_post_meta($variation_id, 'rtwpvg_images', true);
-        if (!empty($gallery_images) && is_array($gallery_images)) {
+        // Procesiramo galeriju
+        // Procesiramo galeriju
+        if (!empty($all_urls['gallery'])) {
             $gallery_ids = [];
+            $urls_to_upload = [];
 
-            foreach ($gallery_images as $gallery_image_id) {
-                if ($image_url = wp_get_attachment_url($gallery_image_id)) {
-                    if ($uploaded_id = $this->upload_image($image_url)) {
+            // Prvo dodeli pronađene slike
+            foreach ($all_urls['gallery'] as $gallery_url) {
+                $filename = basename(parse_url($gallery_url, PHP_URL_PATH));
+                if (isset($found_images[$filename])) {
+                    $gallery_ids[] = $found_images[$filename];
+                } else {
+                    $urls_to_upload[] = $gallery_url;
+                }
+            }
+
+            // Batch upload za sve koje nije pronašao
+            if (!empty($urls_to_upload)) {
+                $batch_uploaded = $this->batch_upload_images($urls_to_upload);
+                foreach ($batch_uploaded as $uploaded_id) {
+                    if ($uploaded_id) {
                         $gallery_ids[] = $uploaded_id;
                     }
                 }

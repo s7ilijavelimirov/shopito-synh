@@ -109,7 +109,7 @@ class Variation_Handler
 
     private function update_matched_variation($variation_obj, $target_variation, $target_product_id)
     {
-        $variation_data = $this->prepare_variation_data($variation_obj, $target_variation);
+        $variation_data = $this->prepare_variation_data($variation_obj, $target_variation, 0, $target_product_id);
         $result = $this->update_variation_data($target_product_id, $target_variation->id, $variation_data);
 
         if ($result) {
@@ -122,7 +122,7 @@ class Variation_Handler
     private function check_sku_exists($sku, $variation_id = 0)
     {
         if (empty($sku)) return false;
-        
+
         $endpoint = add_query_arg(
             [
                 'consumer_key' => $this->settings['consumer_key'],
@@ -131,12 +131,12 @@ class Variation_Handler
             ],
             trailingslashit($this->settings['target_url']) . "wp-json/wc/v3/products"
         );
-        
+
         $response = wp_remote_get($endpoint, ['sslverify' => false]);
-        
+
         if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
             $products = json_decode(wp_remote_retrieve_body($response));
-            
+
             if (!empty($products)) {
                 // Prvo proveravamo da li je SKU već dodeljen istoj varijaciji
                 foreach ($products as $product) {
@@ -144,15 +144,15 @@ class Variation_Handler
                         return false; // SKU već pripada ovoj varijaciji, što je ok
                     }
                 }
-                
+
                 // Ako dođemo dovde, SKU postoji ali na drugom proizvodu
                 return true;
             }
         }
-        
+
         return false; // SKU ne postoji na ciljnom sajtu
     }
-    private function prepare_variation_data($variation_obj, $target_variation, $variation_index = 0)
+    private function prepare_variation_data($variation_obj, $target_variation, $variation_index = 0, $target_product_id = null)
     {
         $parent_product = wc_get_product($variation_obj->get_parent_id());
 
@@ -233,7 +233,7 @@ class Variation_Handler
         }
 
         // Dodavanje slika
-        $variation_images = $this->image_handler->prepare_variation_images($variation_obj->get_id());
+        $variation_images = $this->image_handler->prepare_variation_images($variation_obj->get_id(), $target_product_id);
         if (!empty($variation_images)) {
             if (isset($variation_images['main'])) {
                 $variation_data['image'] = ['id' => $variation_images['main']];
