@@ -1,4 +1,43 @@
 jQuery(document).ready(function ($) {
+    function clearLocalStorageBackup() {
+        // Ukloni WordPress autosave iz localStorage
+        if (typeof Storage !== 'undefined') {
+            const postId = $('#post_ID').val();
+            if (postId) {
+                localStorage.removeItem('wp-autosave-1-' + postId);
+                localStorage.removeItem('wp-autosave-' + postId);
+            }
+        }
+
+        // Sakrij notice ako se već prikazuje
+        $('#local-storage-notice').remove();
+    }
+    function disableAutosave() {
+        if (typeof wp !== 'undefined' && wp.autosave) {
+            wp.autosave.server.suspend();
+            console.log('Autosave disabled during sync');
+        }
+    }
+
+    function enableAutosave() {
+        if (typeof wp !== 'undefined' && wp.autosave) {
+            wp.autosave.server.resume();
+            console.log('Autosave enabled after sync');
+        }
+    }
+    function pauseHeartbeat() {
+        if (typeof wp !== 'undefined' && wp.heartbeat) {
+            wp.heartbeat.suspend();
+            console.log('Heartbeat paused during sync');
+        }
+    }
+
+    function resumeHeartbeat() {
+        if (typeof wp !== 'undefined' && wp.heartbeat) {
+            wp.heartbeat.resume();
+            console.log('Heartbeat resumed after sync');
+        }
+    }
     // Utility funkcije
     const showMessage = (container, message, type) => {
         const messageClass = type === 'error' ? 'error' : 'success';
@@ -212,6 +251,8 @@ jQuery(document).ready(function ($) {
     // Sinhronizacija stanja proizvoda
     $('.shopito-sync-stock').on('click', function (e) {
         e.preventDefault();
+        disableAutosave();
+        pauseHeartbeat();
         const button = $(this);
         const productId = button.data('product-id');
         const isVariable = button.data('is-variable') === 'true';
@@ -251,6 +292,7 @@ jQuery(document).ready(function ($) {
             },
             success: function (response) {
                 if (response.success) {
+                    clearLocalStorageBackup();
                     // Procesuiramo korake iz odgovora
                     if (response.data.steps && response.data.steps.length > 0) {
                         response.data.steps.forEach(step => {
@@ -284,6 +326,8 @@ jQuery(document).ready(function ($) {
             complete: function () {
                 button.prop('disabled', false);
                 spinnerDiv.removeClass('is-active');
+                enableAutosave();
+                resumeHeartbeat();
             }
         });
     });
@@ -291,6 +335,8 @@ jQuery(document).ready(function ($) {
     // Puna sinhronizacija proizvoda
     $('.shopito-sync-now').on('click', function (e) {
         e.preventDefault();
+        disableAutosave();
+        pauseHeartbeat();
         const button = $(this);
         const productId = button.data('product-id');
         const statusDiv = button.siblings('.sync-status');
@@ -343,8 +389,10 @@ jQuery(document).ready(function ($) {
             },
             success: function (response) {
                 clearInterval(progressTimer);
+
                 progressIndicator.update(totalSteps, "Sinhronizacija završena!");
                 if (response.success) {
+                    clearLocalStorageBackup();
                     progressIndicator.update(totalSteps);
                     // Update progress steps
                     if (response.data.steps) {
@@ -377,6 +425,8 @@ jQuery(document).ready(function ($) {
             complete: function () {
                 button.prop('disabled', false);
                 spinnerDiv.removeClass('is-active');
+                enableAutosave();
+                resumeHeartbeat();
             }
         });
     });

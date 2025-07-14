@@ -7,19 +7,55 @@ class Image_Handler
     private $settings;
     private $image_cache = [];
     private $logger;
-
+    private static $global_image_cache = [];
     public function __construct($settings)
     {
         $this->settings = $settings;
         $this->logger = Logger::get_instance();
     }
+    /**
+     * Proverava da li je slika stvarno dodeljena proizvodu
+     */
+    private function is_image_attached_to_product($image_id, $product_id)
+    {
+        $endpoint = add_query_arg([
+            'consumer_key' => $this->settings['consumer_key'],
+            'consumer_secret' => $this->settings['consumer_secret']
+        ], trailingslashit($this->settings['target_url']) . 'wp-json/wc/v3/products/' . $product_id);
 
+        $response = wp_remote_get($endpoint, [
+            'sslverify' => false,
+            'timeout' => 30
+        ]);
+
+        if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
+            return false;
+        }
+
+        $product_data = json_decode(wp_remote_retrieve_body($response), true);
+
+        // Proveri glavnu sliku
+        if (isset($product_data['image']['id']) && $product_data['image']['id'] == $image_id) {
+            return true;
+        }
+
+        // Proveri galeriju
+        if (isset($product_data['images'])) {
+            foreach ($product_data['images'] as $img) {
+                if (isset($img['id']) && $img['id'] == $image_id) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
     private function log($message, $level = 'info', $context = [])
     {
         $this->logger->log($message, $level, $context);
     }
 
-    private function check_image_exists_by_name($filename)
+    private function check_image_exists_by_name($filename, $product_id = null)
     {
         // Brišemo transient keš jer možda sadrži zastarele ID-jeve
         $cache_key = 'shopito_img_' . md5($filename);
@@ -27,25 +63,52 @@ class Image_Handler
 
         // Prvo proverimo lokalni keš (za trenutnu sesiju)
         if (isset($this->image_cache[$filename])) {
-            $this->logger->info("Slika pronađena u lokalnom kešu: {$filename}", [
-                'cached_id' => $this->image_cache[$filename]
-            ]);
-            return $this->image_cache[$filename];
+            $cached_id = $this->image_cache[$filename];
+
+            // NOVA PROVERA: Da li je slika stvarno dodeljena proizvodu
+            if ($product_id && !$this->is_image_attached_to_product($cached_id, $product_id)) {
+                $this->logger->info("Slika postoji u kešu ali nije dodeljena proizvodu: {$filename}", [
+                    'image_id' => $cached_id,
+                    'product_id' => $product_id
+                ]);
+
+                // Ukloni iz keša i nastavi sa upload-om
+                unset($this->image_cache[$filename]);
+                delete_transient($cache_key);
+            } else {
+                $this->logger->info("Slika pronađena u lokalnom kešu: {$filename}", [
+                    'cached_id' => $cached_id
+                ]);
+                return $cached_id;
+            }
         }
 
         // Proveravamo bez -scaled varijante
         $base_filename = str_replace('-scaled', '', $filename);
         if (isset($this->image_cache[$base_filename])) {
-            $this->logger->info("Slika pronađena u lokalnom kešu (bez scaled): {$base_filename}", [
-                'cached_id' => $this->image_cache[$base_filename]
-            ]);
-            return $this->image_cache[$base_filename];
+            $cached_id = $this->image_cache[$base_filename];
+
+            // NOVA PROVERA i za base filename
+            if ($product_id && !$this->is_image_attached_to_product($cached_id, $product_id)) {
+                $this->logger->info("Base slika postoji u kešu ali nije dodeljena proizvodu: {$base_filename}", [
+                    'image_id' => $cached_id,
+                    'product_id' => $product_id
+                ]);
+
+                unset($this->image_cache[$base_filename]);
+                delete_transient('shopito_img_' . md5($base_filename));
+            } else {
+                $this->logger->info("Slika pronađena u lokalnom kešu (bez scaled): {$base_filename}", [
+                    'cached_id' => $cached_id
+                ]);
+                return $cached_id;
+            }
         }
 
         // API poziv za pretragu po imenu fajla
         $endpoint = add_query_arg([
             'search' => $filename,
-            'per_page' => 10 // Povećan broj rezultata za bolju pretragu
+            'per_page' => 10
         ], trailingslashit($this->settings['target_url']) . 'wp-json/wp/v2/media');
 
         $this->logger->info("Pretraga slike na ciljnom sajtu: {$filename}", [
@@ -57,7 +120,7 @@ class Image_Handler
                 'Authorization' => 'Basic ' . base64_encode($this->settings['username'] . ':' . $this->settings['password'])
             ],
             'sslverify' => false,
-            'timeout' => 30
+            'timeout' => 20
         ]);
 
         if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
@@ -71,14 +134,23 @@ class Image_Handler
                     str_replace('-scaled', '', $item_filename) === str_replace('-scaled', '', $filename)
                 ) {
 
+                    // NOVA PROVERA: Da li je slika dodeljena proizvodu
+                    if ($product_id && !$this->is_image_attached_to_product($item->id, $product_id)) {
+                        $this->logger->info("Slika postoji u media library ali nije dodeljena proizvodu: {$filename}", [
+                            'media_id' => $item->id,
+                            'product_id' => $product_id
+                        ]);
+                        continue; // Nastavi pretragu
+                    }
+
                     // Ažuriramo lokalni keš
                     $this->image_cache[$filename] = $item->id;
                     $this->image_cache[$base_filename] = $item->id;
 
                     // Ažuriramo transient keš sa kraćim trajanjem
-                    set_transient($cache_key, $item->id, 1 * DAY_IN_SECONDS); // Skraćeno na 1 dan
+                    set_transient($cache_key, $item->id, 1 * DAY_IN_SECONDS);
 
-                    $this->logger->info("Slika pronađena na ciljnom sajtu: {$filename}", [
+                    $this->logger->info("Slika pronađena na ciljnom sajtu i dodeljena proizvodu: {$filename}", [
                         'media_id' => $item->id
                     ]);
 
@@ -92,7 +164,7 @@ class Image_Handler
             ]);
         }
 
-        $this->logger->info("Slika nije pronađena na ciljnom sajtu: {$filename}");
+        $this->logger->info("Slika nije pronađena na ciljnom sajtu ili nije dodeljena proizvodu: {$filename}");
         return false;
     }
 
@@ -104,10 +176,18 @@ class Image_Handler
         }
 
         $filename = basename(parse_url($image_url, PHP_URL_PATH));
-
+        if (isset(self::$global_image_cache[$image_url])) {
+            $this->logger->info("Slika pronađena u globalnom kešu: {$filename}", [
+                'cached_id' => self::$global_image_cache[$image_url]
+            ]);
+            return self::$global_image_cache[$image_url];
+        }
         // Uvek prvo proverimo da li slika već postoji, bez korišćenja keša
         $existing_id = $this->check_image_exists_by_name($filename);
         if ($existing_id) {
+            // DODAJ: Sačuvaj u globalnom kešu
+            self::$global_image_cache[$image_url] = $existing_id;
+
             $this->logger->info("Slika već postoji na ciljnom sajtu: {$filename}", [
                 'existing_id' => $existing_id
             ]);
@@ -150,6 +230,7 @@ class Image_Handler
             if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 201) {
                 $media = json_decode(wp_remote_retrieve_body($response));
                 if (isset($media->id)) {
+                    self::$global_image_cache[$image_url] = $media->id;
                     $this->image_cache[$filename] = $media->id;
                     $base_filename = str_replace('-scaled', '', $filename);
                     $this->image_cache[$base_filename] = $media->id;
@@ -171,7 +252,7 @@ class Image_Handler
 
                 // Sačekajmo malo pre ponovnog pokušaja
                 if ($attempt < $max_attempts) {
-                    sleep(1);
+                    usleep(300000); // 0.3 sekunde umesto 1 sekunde
                 }
             }
         }
@@ -180,7 +261,7 @@ class Image_Handler
         return false;
     }
 
-    public function prepare_product_images($product)
+    public function prepare_product_images($product, $target_product_id = null)
     {
         if (!$product) {
             return [];
@@ -191,12 +272,25 @@ class Image_Handler
         // Glavna slika
         if ($image_id = $product->get_image_id()) {
             if ($image_url = wp_get_attachment_url($image_id)) {
-                if ($uploaded_id = $this->upload_image($image_url)) {
+                $filename = basename(parse_url($image_url, PHP_URL_PATH));
+
+                // Proveravamo sa product_id
+                $existing_id = $this->check_image_exists_by_name($filename, $target_product_id);
+
+                if ($existing_id) {
                     $images[] = [
-                        'id' => $uploaded_id,
+                        'id' => $existing_id,
                         'src' => $image_url,
                         'position' => 0
                     ];
+                } else {
+                    if ($uploaded_id = $this->upload_image($image_url)) {
+                        $images[] = [
+                            'id' => $uploaded_id,
+                            'src' => $image_url,
+                            'position' => 0
+                        ];
+                    }
                 }
             }
         }
@@ -205,12 +299,24 @@ class Image_Handler
         $gallery_image_ids = $product->get_gallery_image_ids();
         foreach ($gallery_image_ids as $index => $gallery_image_id) {
             if ($image_url = wp_get_attachment_url($gallery_image_id)) {
-                if ($uploaded_id = $this->upload_image($image_url)) {
+                $filename = basename(parse_url($image_url, PHP_URL_PATH));
+
+                $existing_id = $this->check_image_exists_by_name($filename, $target_product_id);
+
+                if ($existing_id) {
                     $images[] = [
-                        'id' => $uploaded_id,
+                        'id' => $existing_id,
                         'src' => $image_url,
                         'position' => $index + 1
                     ];
+                } else {
+                    if ($uploaded_id = $this->upload_image($image_url)) {
+                        $images[] = [
+                            'id' => $uploaded_id,
+                            'src' => $image_url,
+                            'position' => $index + 1
+                        ];
+                    }
                 }
             }
         }

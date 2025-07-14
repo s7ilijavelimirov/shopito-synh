@@ -238,7 +238,7 @@ class API_Handler
             $images = [];
             if (!$skip_images) {
                 $steps[] = ['name' => 'images', 'status' => 'active', 'message' => 'Prebacivanje slika...'];
-                $images = $this->process_images_in_batch($product);
+                $images = $this->process_images_in_batch($product, $existing_product_id);
                 $steps[count($steps) - 1] = [
                     'name' => 'images',
                     'status' => 'completed',
@@ -284,7 +284,7 @@ class API_Handler
                         'Authorization' => 'Basic ' . base64_encode($this->settings['username'] . ':' . $this->settings['password'])
                     ],
                     'body' => json_encode($data),
-                    'timeout' => 600,
+                    'timeout' => 900,
                     'sslverify' => false
                 ], $method);
             } catch (\Exception $first_error) {
@@ -308,7 +308,7 @@ class API_Handler
                             'Authorization' => 'Basic ' . base64_encode($this->settings['username'] . ':' . $this->settings['password'])
                         ],
                         'body' => json_encode($data),
-                        'timeout' => 600,
+                        'timeout' => 900,
                         'sslverify' => false
                     ], $method);
                 } else {
@@ -470,7 +470,7 @@ class API_Handler
         return false;
     }
     // Ostale funkcije ostaju iste
-    private function process_images_in_batch($product)
+    private function process_images_in_batch($product, $existing_product_id = null)
     {
         $images = [];
         $batch_size = 3; // Procesiramo po 3 slike odjednom
@@ -513,9 +513,16 @@ class API_Handler
             }
 
             // Kratka pauza između batch-eva da ne preopteretimo server
-            if ($index < count($image_ids) / $batch_size - 1) {
-                usleep(500000); // 0.5 sekundi pauza
-            }
+            // if ($index < count($image_ids) / $batch_size - 1) {
+            //     usleep(500000); // 0.5 sekundi pauza
+            // }
+        }
+
+        // DODAJ OVO NA KRAJU:
+        // Fallback - ako batch processing nije uspeo, pokušaj sa prepare_product_images
+        if (empty($images)) {
+            $this->logger->info("Batch processing failed, trying prepare_product_images");
+            $images = $this->image_handler->prepare_product_images($product, $existing_product_id);
         }
 
         return $images;
@@ -880,7 +887,7 @@ class API_Handler
                     'Content-Type' => 'application/json'
                 ],
                 'body' => json_encode($stock_data),
-                'timeout' => 120,
+                'timeout' => 60,
                 'sslverify' => false
             ], 'PUT');
 
@@ -984,7 +991,7 @@ class API_Handler
                         'Authorization' => 'Basic ' . base64_encode($this->settings['username'] . ':' . $this->settings['password'])
                     ],
                     'body' => json_encode($data),
-                    'timeout' => 120,
+                    'timeout' => 60,
                     'sslverify' => false
                 ], 'PUT');
 
