@@ -30,11 +30,108 @@ class API_Handler
     {
         $this->variation_handler = $variation_handler;
     }
+    private function verify_image_exists($image_id)
+    {
+        $endpoint = trailingslashit($this->settings['target_url']) . 'wp-json/wp/v2/media/' . $image_id;
+        $response = wp_remote_get($endpoint, [
+            'headers' => [
+                'Authorization' => 'Basic ' . base64_encode($this->settings['username'] . ':' . $this->settings['password'])
+            ],
+            'sslverify' => false,
+            'timeout' => 20
+        ]);
+
+        return !is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200;
+    }
+    private function find_product_by_variation_skus($product)
+    {
+        if ($product->get_type() !== 'variable') {
+            return false;
+        }
+
+        $variations = $product->get_children();
+        if (empty($variations)) {
+            return false;
+        }
+
+        // Skupljamo SKU-ove svih varijacija
+        $variation_skus = [];
+        foreach ($variations as $variation_id) {
+            $variation = wc_get_product($variation_id);
+            if ($variation && !empty($variation->get_sku())) {
+                $variation_skus[] = $variation->get_sku();
+            }
+        }
+
+        if (empty($variation_skus)) {
+            return false;
+        }
+
+        foreach ($variation_skus as $sku) {
+            // Prvo probamo sa type=variation parametrom
+            $endpoint = $this->build_api_endpoint("products", [
+                'type' => 'variation',
+                'sku' => $sku
+            ]);
+
+            $this->logger->info("Tražim proizvod preko SKU varijacije (sa type)", [
+                'sku' => $sku
+            ]);
+
+            $response = wp_remote_get($endpoint, ['sslverify' => false, 'timeout' => 30]);
+
+            // Ako to ne uspe, probamo bez type parametra
+            if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
+                $variations = json_decode(wp_remote_retrieve_body($response));
+                if (!empty($variations)) {
+                    $parent_id = $variations[0]->parent_id;
+                    $this->logger->info("Pronađen proizvod preko SKU varijacije (sa type)", [
+                        'sku' => $sku,
+                        'target_parent_id' => $parent_id
+                    ]);
+                    return $parent_id;
+                }
+            }
+
+            // Probamo bez type parametra
+            $endpoint = $this->build_api_endpoint("products", [
+                'sku' => $sku
+            ]);
+
+            $this->logger->info("Tražim proizvod preko SKU varijacije (bez type)", [
+                'sku' => $sku
+            ]);
+
+            $response = wp_remote_get($endpoint, ['sslverify' => false, 'timeout' => 30]);
+
+            if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
+                $products = json_decode(wp_remote_retrieve_body($response));
+                if (!empty($products)) {
+                    $found_product = null;
+
+                    // Tražimo proizod koji je varijacija
+                    foreach ($products as $product) {
+                        if (isset($product->type) && $product->type === 'variation' && isset($product->parent_id)) {
+                            $parent_id = $product->parent_id;
+                            $this->logger->info("Pronađen proizvod preko SKU varijacije (bez type)", [
+                                'sku' => $sku,
+                                'target_parent_id' => $parent_id
+                            ]);
+                            return $parent_id;
+                        }
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
     private function make_api_request($endpoint, $args, $method = 'GET')
     {
         $attempt = 0;
         $last_error = null;
         $success = false;
+        $original_body = isset($args['body']) ? $args['body'] : null;
 
         while ($attempt < $this->max_retries && !$success) {
             if ($attempt > 0) {
@@ -45,6 +142,22 @@ class API_Handler
                     'endpoint' => $endpoint
                 ]);
                 sleep($delay);
+
+                // Ako imamo body i prethodna greška je bila vezana za sliku
+                if (
+                    $original_body && $last_error &&
+                    (strpos($last_error->get_error_message(), 'invalid_image_id') !== false)
+                ) {
+                    // Pokušajmo bez slika
+                    $body_data = json_decode($original_body, true);
+                    if (isset($body_data['images'])) {
+                        $this->logger->warning("Uklanjanje problematičnih slika iz zahteva", [
+                            'attempt' => $attempt + 1
+                        ]);
+                        unset($body_data['images']);
+                        $args['body'] = json_encode($body_data);
+                    }
+                }
             }
 
             // Dinamički povećavamo timeout za ponovne pokušaje
@@ -386,7 +499,10 @@ class API_Handler
             foreach ($batch as $position => $image_id) {
                 if (isset($image_urls[$image_id])) {
                     $image_url = $image_urls[$image_id];
-                    if ($uploaded_id = $this->image_handler->upload_image($image_url)) {
+                    $uploaded_id = $this->image_handler->upload_image($image_url);
+
+                    // Proverite da slika zaista postoji
+                    if ($uploaded_id && $this->verify_image_exists($uploaded_id)) {
                         $images[] = [
                             'id' => $uploaded_id,
                             'src' => $image_url,
@@ -598,6 +714,7 @@ class API_Handler
             }
         }
 
+        // Ako ima SKU, proverimo preko njega
         if ($sku = $product->get_sku()) {
             $endpoint = $this->build_api_endpoint("products", ['sku' => $sku]);
             $response = wp_remote_get($endpoint, ['sslverify' => false]);
@@ -609,6 +726,19 @@ class API_Handler
                     update_post_meta($product->get_id(), '_synced_product_id', $remote_product->id);
                     return $remote_product->id;
                 }
+            }
+        }
+
+        // DODATO: Provera preko SKU-ova varijacija ako je varijabilni proizvod
+        if ($product->get_type() === 'variable') {
+            $target_id = $this->find_product_by_variation_skus($product);
+            if ($target_id) {
+                $this->logger->info("Proizvod pronađen preko SKU varijacija", [
+                    'product_id' => $product->get_id(),
+                    'target_id' => $target_id
+                ]);
+                update_post_meta($product->get_id(), '_synced_product_id', $target_id);
+                return $target_id;
             }
         }
 
@@ -944,7 +1074,20 @@ class API_Handler
             }
         }
 
-        // 4. Pokušamo sa imenom proizvoda kao zadnju opciju
+        // 4. NOVA METODA: Pokušamo sa SKU-ovima varijacija
+        if ($product->get_type() === 'variable') {
+            $target_id = $this->find_product_by_variation_skus($product);
+            if ($target_id) {
+                $this->logger->info("Proizvod pronađen preko SKU varijacija", [
+                    'product_id' => $product->get_id(),
+                    'target_id' => $target_id
+                ]);
+                update_post_meta($product->get_id(), '_synced_product_id', $target_id);
+                return $target_id;
+            }
+        }
+
+        // 5. Pokušamo sa imenom proizvoda kao zadnju opciju
         $target_id = $this->find_product_by_name($product->get_name());
         if ($target_id) {
             $this->logger->info("Proizvod pronađen preko imena", [

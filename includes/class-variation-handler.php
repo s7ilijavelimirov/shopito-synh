@@ -119,7 +119,39 @@ class Variation_Handler
             ], 'success');
         }
     }
-
+    private function check_sku_exists($sku, $variation_id = 0)
+    {
+        if (empty($sku)) return false;
+        
+        $endpoint = add_query_arg(
+            [
+                'consumer_key' => $this->settings['consumer_key'],
+                'consumer_secret' => $this->settings['consumer_secret'],
+                'sku' => $sku
+            ],
+            trailingslashit($this->settings['target_url']) . "wp-json/wc/v3/products"
+        );
+        
+        $response = wp_remote_get($endpoint, ['sslverify' => false]);
+        
+        if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
+            $products = json_decode(wp_remote_retrieve_body($response));
+            
+            if (!empty($products)) {
+                // Prvo proveravamo da li je SKU već dodeljen istoj varijaciji
+                foreach ($products as $product) {
+                    if ($product->id == $variation_id) {
+                        return false; // SKU već pripada ovoj varijaciji, što je ok
+                    }
+                }
+                
+                // Ako dođemo dovde, SKU postoji ali na drugom proizvodu
+                return true;
+            }
+        }
+        
+        return false; // SKU ne postoji na ciljnom sajtu
+    }
     private function prepare_variation_data($variation_obj, $target_variation, $variation_index = 0)
     {
         $parent_product = wc_get_product($variation_obj->get_parent_id());
@@ -159,25 +191,32 @@ class Variation_Handler
         // Proveri da li je SKU validan (nije prazan i nije dupliciran)
         $is_valid_sku = !empty($variation_sku) && $variation_sku !== $parent_sku;
 
-        // Dodaj SKU samo ako je validan i normaliziran
+        // Dodaj SKU samo ako je validan
         if ($is_valid_sku) {
-            $normalized_sku = isset($this->api_handler) && method_exists($this->api_handler, 'normalize_sku')
-                ? $this->api_handler->normalize_sku($variation_sku)
-                : trim($variation_sku);
+            $normalized_sku = trim($variation_sku);
 
-            $variation_data['sku'] = $normalized_sku;
-
-            $this->log("Korišten postojeći SKU za varijaciju", [
-                'variation_id' => $variation_obj->get_id(),
-                'sku' => $normalized_sku
-            ], 'info');
+            // Provera da li SKU već postoji na ciljnom sajtu (na drugom proizvodu)
+            if (!$this->check_sku_exists($normalized_sku, $target_variation->id)) {
+                $variation_data['sku'] = $normalized_sku;
+                $this->log("Korišten postojeći SKU za varijaciju", [
+                    'variation_id' => $variation_obj->get_id(),
+                    'sku' => $normalized_sku
+                ], 'info');
+            } else {
+                // SKU već postoji negde drugde - ne dodajemo ga
+                $this->log("SKU već postoji na drugom proizvodu, preskačem dodavanje SKU", [
+                    'variation_id' => $variation_obj->get_id(),
+                    'sku' => $normalized_sku
+                ], 'warning');
+                // Ne dodajemo SKU u variation_data, tako da će ostati kao što je na ciljnom sajtu
+            }
         } else {
-            $this->log("Preskočen problematični SKU za varijaciju", 'warning', [
+            $this->log("Preskočen problematični SKU za varijaciju", [
                 'variation_id' => $variation_obj->get_id(),
                 'original_sku' => $variation_sku,
                 'parent_sku' => $parent_sku
-            ]);
-            // Ovde namerno ne dodajemo SKU u variation_data, tako da polje SKU neće biti ažurirano na ciljnom sajtu
+            ], 'warning');
+            // Ovde namerno ne dodajemo SKU u variation_data
         }
 
         $length = $variation_obj->get_length();
