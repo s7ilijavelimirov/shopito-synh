@@ -20,14 +20,14 @@ class Variation_Handler
     /**
      * Logging metoda koja proverava da li je logovanje omogućeno
      */
-    private function log($message, $context = [], $level = 'info')
+    private function log($message, $level = 'info', $context = [])
     {
         $this->logger->log($message, $level, $context);
     }
 
     public function sync_variations($product_id, $target_product_id)
     {
-        $this->log("Započeta sinhronizacija varijacija", [
+        $this->log("Započeta optimizovana sinhronizacija varijacija", 'info', [
             'source' => $product_id,
             'target' => $target_product_id
         ]);
@@ -59,27 +59,53 @@ class Variation_Handler
             'source_count' => count($source_variations)
         ]);
 
-        $matched_count = 0;
-        foreach ($target_variations as $target_variation) {
-            $matching_variation = $this->find_matching_source_variation(
-                $target_variation,
-                $source_variations
-            );
+        // NOVA OPTIMIZACIJA: Batch processing slika za sve varijacije odjednom
+        $this->log("Startuje batch priprema slika za sve varijacije");
+        $all_variation_images = $this->image_handler->batch_prepare_all_variation_images($source_variations, $target_product_id);
+        $this->log("Završena batch priprema slika", ['processed_variations' => count($all_variation_images)]);
 
-            if ($matching_variation) {
-                $matched_count++;
-                $this->update_matched_variation(
-                    $matching_variation['data'],
+        $matched_count = 0;
+
+        // Batch processing varijacija u manjim grupama
+        $batch_size = 3;
+        $batches = array_chunk($target_variations, $batch_size);
+
+        foreach ($batches as $batch_index => $batch) {
+            $this->log("Procesiranje batch-a varijacija " . ($batch_index + 1), ['batch_size' => count($batch)]);
+
+            foreach ($batch as $target_variation) {
+                $matching_variation = $this->find_matching_source_variation(
                     $target_variation,
-                    $target_product_id
+                    $source_variations
                 );
 
-                // Sačuvamo ID varijacije na ciljnom sajtu za buduće sinhronizacije
-                update_post_meta($matching_variation['variation_id'], '_synced_variation_id', $target_variation->id);
+                if ($matching_variation) {
+                    $matched_count++;
+                    $variation_id = $matching_variation['variation_id'];
+
+                    // Koristimo već pripremljene slike
+                    $variation_images = isset($all_variation_images[$variation_id])
+                        ? $all_variation_images[$variation_id]
+                        : [];
+
+                    $this->update_matched_variation_with_images(
+                        $matching_variation['data'],
+                        $target_variation,
+                        $target_product_id,
+                        $variation_images
+                    );
+
+                    update_post_meta($variation_id, '_synced_variation_id', $target_variation->id);
+                }
+            }
+
+            // Kratka pauza između batch-eva
+            if ($batch_index < count($batches) - 1) {
+                usleep(100000); // 0.1s
             }
         }
 
-        $this->log("Sinhronizacija varijacija završena", [
+        $this->log("Optimizovana sinhronizacija varijacija završena", [
             'product_id' => $product_id,
             'target_product_id' => $target_product_id,
             'matched_variations' => $matched_count
@@ -520,5 +546,107 @@ class Variation_Handler
         ], 'error');
 
         return false;
+    }
+    private function update_matched_variation_with_images($variation_obj, $target_variation, $target_product_id, $pre_uploaded_images)
+    {
+        $variation_data = $this->prepare_variation_data_optimized($variation_obj, $target_variation, $pre_uploaded_images);
+        $result = $this->update_variation_data($target_product_id, $target_variation->id, $variation_data);
+
+        if ($result) {
+            $this->log("Varijacija uspešno ažurirana (optimizovano)", [
+                'variation_id' => $variation_obj->get_id(),
+                'target_variation_id' => $target_variation->id
+            ], 'success');
+        }
+    }
+
+    private function prepare_variation_data_optimized($variation_obj, $target_variation, $pre_uploaded_images)
+    {
+        $parent_product = wc_get_product($variation_obj->get_parent_id());
+
+        $variation_data = [
+            'regular_price' => $this->api_handler->convert_price_to_bam($variation_obj->get_regular_price()),
+            'sale_price' => $this->api_handler->convert_price_to_bam($variation_obj->get_sale_price()),
+            'stock_quantity' => $variation_obj->get_stock_quantity(),
+            'manage_stock' => $variation_obj->get_manage_stock(),
+            'stock_status' => $variation_obj->get_stock_status(),
+            'description' => $variation_obj->get_description(),
+            'attributes' => $this->prepare_attributes_for_api($target_variation->attributes),
+            'weight' => $variation_obj->get_weight(),
+            'meta_data' => [
+                [
+                    'key' => '_alg_ean',
+                    'value' => get_post_meta($variation_obj->get_id(), '_alg_ean', true)
+                        ?: get_post_meta($variation_obj->get_id(), '_ean', true)
+                ],
+                [
+                    'key' => '_purchase_price',
+                    'value' => get_post_meta($variation_obj->get_id(), '_purchase_price', true)
+                ],
+                [
+                    'key' => '_minimum_quantity',
+                    'value' => get_post_meta($variation_obj->get_id(), '_minimum_quantity', true)
+                ]
+            ]
+        ];
+
+        // SKU logika (ista kao postojeća)
+        $variation_sku = $variation_obj->get_sku();
+        $parent_sku = $parent_product ? $parent_product->get_sku() : '';
+        $is_valid_sku = !empty($variation_sku) && $variation_sku !== $parent_sku;
+
+        if ($is_valid_sku) {
+            $normalized_sku = trim($variation_sku);
+            if (!$this->check_sku_exists($normalized_sku, $target_variation->id)) {
+                $variation_data['sku'] = $normalized_sku;
+                $this->log("Korišten postojeći SKU za varijaciju", [
+                    'variation_id' => $variation_obj->get_id(),
+                    'sku' => $normalized_sku
+                ], 'info');
+            } else {
+                $this->log("SKU već postoji na drugom proizvodu, preskačem dodavanje SKU", [
+                    'variation_id' => $variation_obj->get_id(),
+                    'sku' => $normalized_sku
+                ], 'warning');
+            }
+        } else {
+            $this->log("Preskočen problematični SKU za varijaciju", [
+                'variation_id' => $variation_obj->get_id(),
+                'original_sku' => $variation_sku,
+                'parent_sku' => $parent_sku
+            ], 'warning');
+        }
+
+        // Dimenzije
+        $length = $variation_obj->get_length();
+        $width = $variation_obj->get_width();
+        $height = $variation_obj->get_height();
+
+        if ($length > 0 || $width > 0 || $height > 0) {
+            $variation_data['dimensions'] = [
+                'length' => $length,
+                'width'  => $width,
+                'height' => $height
+            ];
+        }
+
+        // OPTIMIZOVANO: Koristi već pripremljene slike
+        if (!empty($pre_uploaded_images)) {
+            if (isset($pre_uploaded_images['main'])) {
+                $variation_data['image'] = ['id' => $pre_uploaded_images['main']];
+            }
+            if (isset($pre_uploaded_images['gallery']) && !empty($pre_uploaded_images['gallery'])) {
+                $variation_data['meta_data'][] = [
+                    'key' => 'rtwpvg_images',
+                    'value' => $pre_uploaded_images['gallery']
+                ];
+                $variation_data['meta_data'][] = [
+                    'key' => '_gallery_images',
+                    'value' => $pre_uploaded_images['gallery']
+                ];
+            }
+        }
+
+        return $variation_data;
     }
 }

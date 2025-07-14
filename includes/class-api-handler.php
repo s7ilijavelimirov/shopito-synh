@@ -161,7 +161,18 @@ class API_Handler
             }
 
             // Dinamički povećavamo timeout za ponovne pokušaje
-            $timeout = isset($args['timeout']) ? $args['timeout'] : 30;
+            if (isset($args['timeout'])) {
+                $timeout = $args['timeout'];
+            } else {
+                // Jednostavan pristup - batch operacije vs ostalo
+                $is_batch_operation = (
+                    strpos($endpoint, 'variations') !== false ||
+                    strpos($endpoint, 'media') !== false ||
+                    ($method === 'POST' && strpos($endpoint, 'products') !== false)
+                );
+
+                $timeout = $is_batch_operation ? 300 : 120;
+            }
             if ($attempt > 0) {
                 $args['timeout'] = $timeout * 1.5; // Povećavamo timeout za 50%
             }
@@ -213,6 +224,7 @@ class API_Handler
     }
     public function sync_product($product_id, $skip_images = false)
     {
+        set_time_limit(600);
         $steps = [];
         $logger = Logger::get_instance();
         $logger->info("Starting full product sync", [
@@ -284,7 +296,7 @@ class API_Handler
                         'Authorization' => 'Basic ' . base64_encode($this->settings['username'] . ':' . $this->settings['password'])
                     ],
                     'body' => json_encode($data),
-                    'timeout' => 900,
+                    'timeout' => 300,
                     'sslverify' => false
                 ], $method);
             } catch (\Exception $first_error) {
@@ -308,7 +320,7 @@ class API_Handler
                             'Authorization' => 'Basic ' . base64_encode($this->settings['username'] . ':' . $this->settings['password'])
                         ],
                         'body' => json_encode($data),
-                        'timeout' => 900,
+                        'timeout' => 300,
                         'sslverify' => false
                     ], $method);
                 } else {

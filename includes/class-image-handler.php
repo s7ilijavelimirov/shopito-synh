@@ -14,6 +14,110 @@ class Image_Handler
         $this->logger = Logger::get_instance();
     }
     /**
+     * NOVA METODA: Batch upload svih slika za sve varijacije odjednom
+     */
+    public function batch_prepare_all_variation_images($variations, $target_product_id = null)
+    {
+        $all_urls = [];
+        $variation_url_map = [];
+
+        $this->log("Batch priprema slika za sve varijacije", 'info', ['variations_count' => count($variations)]);
+
+        // Skupljamo sve URL-ove odjednom
+        foreach ($variations as $variation_data) {
+            $variation_id = $variation_data['variation_id'];
+            $variation = $variation_data['data'];
+
+            $urls = [];
+
+            // Glavna slika
+            if ($image_id = $variation->get_image_id()) {
+                if ($image_url = wp_get_attachment_url($image_id)) {
+                    $urls['main'] = $image_url;
+                    $all_urls[] = $image_url;
+                }
+            }
+
+            // Galerija
+            $gallery_images = get_post_meta($variation_id, 'rtwpvg_images', true);
+            if (!empty($gallery_images) && is_array($gallery_images)) {
+                $urls['gallery'] = [];
+                foreach ($gallery_images as $gallery_image_id) {
+                    if ($image_url = wp_get_attachment_url($gallery_image_id)) {
+                        $urls['gallery'][] = $image_url;
+                        $all_urls[] = $image_url;
+                    }
+                }
+            }
+
+            $variation_url_map[$variation_id] = $urls;
+        }
+
+        if (empty($all_urls)) {
+            $this->log("Nema slika za procesiranje");
+            return [];
+        }
+
+        // Batch pretraga postojećih slika
+        $all_filenames = array_map(function ($url) {
+            return basename(parse_url($url, PHP_URL_PATH));
+        }, array_unique($all_urls));
+
+        $found_images = $this->batch_search_images($all_filenames, $target_product_id);
+
+        // Batch upload samo onih koje nije našao
+        $urls_to_upload = [];
+        foreach (array_unique($all_urls) as $url) {
+            $filename = basename(parse_url($url, PHP_URL_PATH));
+            if (!isset($found_images[$filename])) {
+                $urls_to_upload[] = $url;
+            }
+        }
+
+        $uploaded_images = [];
+        if (!empty($urls_to_upload)) {
+            $uploaded_images = $this->batch_upload_images($urls_to_upload);
+        }
+
+        // Mapiranje rezultata nazad na varijacije
+        $result = [];
+        foreach ($variation_url_map as $variation_id => $urls) {
+            $images = [];
+
+            if (isset($urls['main'])) {
+                $filename = basename(parse_url($urls['main'], PHP_URL_PATH));
+                if (isset($found_images[$filename])) {
+                    $images['main'] = $found_images[$filename];
+                } elseif (isset($uploaded_images[$urls['main']])) {
+                    $images['main'] = $uploaded_images[$urls['main']];
+                }
+            }
+
+            if (!empty($urls['gallery'])) {
+                $images['gallery'] = [];
+                foreach ($urls['gallery'] as $gallery_url) {
+                    $filename = basename(parse_url($gallery_url, PHP_URL_PATH));
+                    if (isset($found_images[$filename])) {
+                        $images['gallery'][] = $found_images[$filename];
+                    } elseif (isset($uploaded_images[$gallery_url])) {
+                        $images['gallery'][] = $uploaded_images[$gallery_url];
+                    }
+                }
+            }
+
+            $result[$variation_id] = $images;
+        }
+
+        $this->log("Batch priprema završena", 'info', [
+            'total_variations' => count($variations),
+            'total_images' => count($all_urls),
+            'found_existing' => count($found_images),
+            'uploaded_new' => count($uploaded_images)
+        ]);
+
+        return $result;
+    }
+    /**
      * Batch pretraga slika na ciljnom sajtu
      */
     private function batch_search_images($filenames, $product_id = null)
