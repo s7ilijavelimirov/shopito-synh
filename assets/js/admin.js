@@ -25,19 +25,7 @@ jQuery(document).ready(function ($) {
             console.log('Autosave enabled after sync');
         }
     }
-    function pauseHeartbeat() {
-        if (typeof wp !== 'undefined' && wp.heartbeat) {
-            wp.heartbeat.suspend();
-            console.log('Heartbeat paused during sync');
-        }
-    }
 
-    function resumeHeartbeat() {
-        if (typeof wp !== 'undefined' && wp.heartbeat) {
-            wp.heartbeat.resume();
-            console.log('Heartbeat resumed after sync');
-        }
-    }
     // Utility funkcije
     const showMessage = (container, message, type) => {
         const messageClass = type === 'error' ? 'error' : 'success';
@@ -252,7 +240,7 @@ jQuery(document).ready(function ($) {
     $('.shopito-sync-stock').on('click', function (e) {
         e.preventDefault();
         disableAutosave();
-        pauseHeartbeat();
+    
         const button = $(this);
         const productId = button.data('product-id');
         const isVariable = button.data('is-variable') === 'true';
@@ -327,7 +315,7 @@ jQuery(document).ready(function ($) {
                 button.prop('disabled', false);
                 spinnerDiv.removeClass('is-active');
                 enableAutosave();
-                resumeHeartbeat();
+            
             }
         });
     });
@@ -336,7 +324,7 @@ jQuery(document).ready(function ($) {
     $('.shopito-sync-now').on('click', function (e) {
         e.preventDefault();
         disableAutosave();
-        pauseHeartbeat();
+     
         const button = $(this);
         const productId = button.data('product-id');
         const statusDiv = button.siblings('.sync-status');
@@ -426,7 +414,7 @@ jQuery(document).ready(function ($) {
                 button.prop('disabled', false);
                 spinnerDiv.removeClass('is-active');
                 enableAutosave();
-                resumeHeartbeat();
+            
             }
         });
     });

@@ -473,7 +473,7 @@ class API_Handler
     private function process_images_in_batch($product, $existing_product_id = null)
     {
         $images = [];
-        $batch_size = 3; // Procesiramo po 3 slike odjednom
+        $batch_size = 5; // OPTIMIZOVANO: Povećano sa 3 na 5
 
         // Skupljamo sve slike (glavnu i galeriju)
         $image_ids = array_filter(array_merge(
@@ -494,7 +494,10 @@ class API_Handler
 
         // Procesiramo slike u batch-evima
         foreach (array_chunk($image_ids, $batch_size) as $index => $batch) {
-            $this->logger->info("Processing image batch", ['batch' => $index + 1]);
+            $this->logger->info("Processing image batch", [
+                'batch' => $index + 1,
+                'size' => count($batch) // DODANO: Log batch size
+            ]);
 
             foreach ($batch as $position => $image_id) {
                 if (isset($image_urls[$image_id])) {
@@ -512,13 +515,12 @@ class API_Handler
                 }
             }
 
-            // Kratka pauza između batch-eva da ne preopteretimo server
-            // if ($index < count($image_ids) / $batch_size - 1) {
-            //     usleep(500000); // 0.5 sekundi pauza
-            // }
+            // OPTIMIZOVANO: Smanjena pauza sa 0.5s na 0.2s
+            if ($index < count($image_ids) / $batch_size - 1) {
+                usleep(200000); // 0.2 sekunde pauza
+            }
         }
 
-        // DODAJ OVO NA KRAJU:
         // Fallback - ako batch processing nije uspeo, pokušaj sa prepare_product_images
         if (empty($images)) {
             $this->logger->info("Batch processing failed, trying prepare_product_images");
