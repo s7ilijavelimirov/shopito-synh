@@ -1,22 +1,10 @@
 jQuery(document).ready(function ($) {
     let syncInProgress = false;
 
-    // DODANO: Heartbeat funkcije
-    function disableHeartbeat() {
-        if (typeof wp !== 'undefined' && wp.heartbeat) {
-            wp.heartbeat.suspend();
-            console.log('Heartbeat disabled during sync');
-        }
-    }
-
-    function enableHeartbeat() {
-        if (typeof wp !== 'undefined' && wp.heartbeat) {
-            wp.heartbeat.resume();
-            console.log('Heartbeat enabled after sync');
-        }
-    }
-
+    // UKLONILI SMO heartbeat i autosave funkcije koje prave problem
+    
     function showSyncNotice() {
+        // Uklanjamo postojeće WordPress notifikacije koje mogu da smetaju
         $('.post-lock-dialog, .autosave-info, #local-storage-notice').remove();
 
         if (!$('#sync-notice').length) {
@@ -54,18 +42,38 @@ jQuery(document).ready(function ($) {
         $('#local-storage-notice').remove();
     }
 
-    function disableAutosave() {
-        if (typeof wp !== 'undefined' && wp.autosave) {
-            wp.autosave.server.suspend();
-            console.log('Autosave disabled during sync');
+    // Dodajemo funkciju za blocking UI tokom sync-a
+    function blockUI() {
+        if (!$('#sync-overlay').length) {
+            $('body').append(`
+                <div id="sync-overlay" style="
+                    position: fixed;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: 100%;
+                    background: rgba(0,0,0,0.5);
+                    z-index: 999998;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                ">
+                    <div style="
+                        background: white;
+                        padding: 30px;
+                        border-radius: 5px;
+                        text-align: center;
+                    ">
+                        <div class="spinner is-active" style="float: none; margin: 0 auto 15px;"></div>
+                        <p>Sinhronizacija u toku...<br>Molimo ne zatvarajte stranicu.</p>
+                    </div>
+                </div>
+            `);
         }
     }
 
-    function enableAutosave() {
-        if (typeof wp !== 'undefined' && wp.autosave) {
-            wp.autosave.server.resume();
-            console.log('Autosave enabled after sync');
-        }
+    function unblockUI() {
+        $('#sync-overlay').remove();
     }
 
     // Utility funkcije
@@ -119,7 +127,7 @@ jQuery(document).ready(function ($) {
         showMessage(statusDiv, errorMessage, 'error');
     };
 
-    // Test konekcije (ostaje isto)
+    // Test konekcije
     function getStatusMessage(response, type) {
         if (response.success) {
             if (type === 'rest') {
@@ -245,10 +253,12 @@ jQuery(document).ready(function ($) {
         const spinnerDiv = button.find('.spinner');
         const progressContainer = $('.sync-progress-container');
 
-        // KLJUČNO: Onemogući WordPress konekcije
-        disableAutosave();
-        disableHeartbeat();
+        // Označavamo da je sync u toku
+        syncInProgress = true;
+        
+        // Prikazujemo notifikaciju i blokiramo UI
         showSyncNotice();
+        blockUI();
 
         button.prop('disabled', true);
         spinnerDiv.addClass('is-active');
@@ -269,7 +279,7 @@ jQuery(document).ready(function ($) {
         $.ajax({
             url: shopitoSync.ajax_url,
             type: 'POST',
-            timeout: 300000, // 5 minuta
+            timeout: 600000, // Povećano na 10 minuta
             data: {
                 action: 'sync_stock_to_ba',
                 nonce: shopitoSync.nonce,
@@ -292,7 +302,9 @@ jQuery(document).ready(function ($) {
                     }
 
                     showMessage(statusDiv, response.data.message, 'success');
-                    setTimeout(() => location.reload(), 1500);
+                    
+                    // Odloženo reload
+                    setTimeout(() => location.reload(), 2000);
                 } else {
                     handleAjaxError(response.data || 'Nepoznata greška', statusDiv);
                 }
@@ -301,13 +313,14 @@ jQuery(document).ready(function ($) {
                 handleAjaxError(xhr, statusDiv);
             },
             complete: function () {
+                syncInProgress = false;
                 button.prop('disabled', false);
                 spinnerDiv.removeClass('is-active');
-
-                enableAutosave();
+                
+                // Uklanjamo notifikaciju i deblokiramo UI
                 setTimeout(() => {
-                    enableHeartbeat();
                     hideSyncNotice();
+                    unblockUI();
                 }, 1000);
             }
         });
@@ -324,10 +337,12 @@ jQuery(document).ready(function ($) {
         const progressContainer = $('.sync-progress-container');
         const skipImages = $('#skip-images').is(':checked');
 
-        // KLJUČNO: Onemogući WordPress konekcije
-        disableAutosave();
-        disableHeartbeat();
+        // Označavamo da je sync u toku
+        syncInProgress = true;
+        
+        // Prikazujemo notifikaciju i blokiramo UI
         showSyncNotice();
+        blockUI();
 
         button.prop('disabled', true);
         spinnerDiv.addClass('is-active');
@@ -340,7 +355,7 @@ jQuery(document).ready(function ($) {
         $.ajax({
             url: shopitoSync.ajax_url,
             type: 'POST',
-            timeout: 600000, // 10 minuta
+            timeout: 900000, // 15 minuta za punu sinhronizaciju
             data: {
                 action: 'sync_to_ba',
                 nonce: shopitoSync.nonce,
@@ -363,7 +378,9 @@ jQuery(document).ready(function ($) {
                     updateSyncProgress('stock', 'completed', 'Stanje ažurirano');
 
                     showMessage(statusDiv, response.data.message, 'success');
-                    setTimeout(() => location.reload(), 1500);
+                    
+                    // Odloženo reload
+                    setTimeout(() => location.reload(), 2000);
                 } else {
                     handleAjaxError(response.data || 'Nepoznata greška', statusDiv);
                 }
@@ -372,13 +389,14 @@ jQuery(document).ready(function ($) {
                 handleAjaxError(xhr, statusDiv);
             },
             complete: function () {
+                syncInProgress = false;
                 button.prop('disabled', false);
                 spinnerDiv.removeClass('is-active');
-
-                enableAutosave();
+                
+                // Uklanjamo notifikaciju i deblokiramo UI
                 setTimeout(() => {
-                    enableHeartbeat();
                     hideSyncNotice();
+                    unblockUI();
                 }, 1000);
             }
         });

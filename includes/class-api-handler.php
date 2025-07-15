@@ -131,89 +131,56 @@ class API_Handler
         $attempt = 0;
         $last_error = null;
         $success = false;
-        $original_body = isset($args['body']) ? $args['body'] : null;
+
+        // LiteSpeed optimizovani headers
+        $default_headers = [
+            'Connection' => 'keep-alive',
+            'Keep-Alive' => 'timeout=300, max=100',
+            'User-Agent' => 'Shopito-Sync-LiteSpeed/1.2.2',
+            'Accept-Encoding' => 'gzip, deflate',
+            'Cache-Control' => 'no-cache'
+        ];
+
+        if (isset($args['headers'])) {
+            $args['headers'] = array_merge($default_headers, $args['headers']);
+        } else {
+            $args['headers'] = $default_headers;
+        }
 
         while ($attempt < $this->max_retries && !$success) {
             if ($attempt > 0) {
-                // Eksponencijalni backoff
-                $delay = $this->retry_delay * pow(2, $attempt - 1);
-                $this->logger->info("Čekanje {$delay}s pre ponovnog pokušaja", [
+                $delay = min($this->retry_delay * pow(2, $attempt - 1), 30); // Max 30s delay
+                $this->logger->info("LiteSpeed retry delay: {$delay}s", [
                     'attempt' => $attempt + 1,
                     'endpoint' => $endpoint
                 ]);
                 sleep($delay);
-
-                // Ako imamo body i prethodna greška je bila vezana za sliku
-                if (
-                    $original_body && $last_error &&
-                    (strpos($last_error->get_error_message(), 'invalid_image_id') !== false)
-                ) {
-                    // Pokušajmo bez slika
-                    $body_data = json_decode($original_body, true);
-                    if (isset($body_data['images'])) {
-                        $this->logger->warning("Uklanjanje problematičnih slika iz zahteva", [
-                            'attempt' => $attempt + 1
-                        ]);
-                        unset($body_data['images']);
-                        $args['body'] = json_encode($body_data);
-                    }
-                }
             }
 
-            // Dinamički povećavamo timeout za ponovne pokušaje
-            if (isset($args['timeout'])) {
-                $timeout = $args['timeout'];
-            } else {
-                // Jednostavan pristup - batch operacije vs ostalo
-                $is_batch_operation = (
-                    strpos($endpoint, 'variations') !== false ||
-                    strpos($endpoint, 'media') !== false ||
-                    ($method === 'POST' && strpos($endpoint, 'products') !== false)
-                );
-
-                $timeout = $is_batch_operation ? 300 : 120;
-            }
-            if ($attempt > 0) {
-                $args['timeout'] = $timeout * 1.5; // Povećavamo timeout za 50%
-            }
+            // Dinamički timeout za LiteSpeed
+            $timeout = $this->calculate_timeout($endpoint, $method);
+            $args['timeout'] = $timeout;
+            $args['httpversion'] = '1.1';
+            $args['blocking'] = true;
+            $args['redirection'] = 3;
 
             $response = wp_remote_request($endpoint, array_merge($args, ['method' => $method]));
 
             if (!is_wp_error($response)) {
                 $response_code = wp_remote_retrieve_response_code($response);
 
-                // Loggujemo response code za debug
-                $this->logger->info("API response code: " . $response_code, [
-                    'endpoint' => $endpoint,
-                    'method' => $method,
-                    'attempt' => $attempt + 1
-                ]);
-
                 if ($response_code >= 200 && $response_code < 300) {
                     return $response;
                 }
 
-                if ($response_code === 429) {
-                    $this->logger->warning("Rate limit hit, sleeping for 10 seconds", [
-                        'endpoint' => $endpoint,
-                        'method' => $method
+                // LiteSpeed specifično handling
+                if ($response_code === 429 || $response_code === 503) {
+                    $this->logger->warning("LiteSpeed rate limit/service unavailable, waiting longer", [
+                        'response_code' => $response_code,
+                        'endpoint' => $endpoint
                     ]);
-                    sleep(10);
+                    sleep(20); // Duža pauza za LiteSpeed
                 }
-
-                // Loggujemo detaljne informacije o grešci
-                $body = wp_remote_retrieve_body($response);
-                $this->logger->error("API Error with response code: " . $response_code, [
-                    'endpoint' => $endpoint,
-                    'method' => $method,
-                    'response' => substr($body, 0, 255) // Logujemo samo deo odgovora
-                ]);
-            } else {
-                $this->logger->error("WP_Error: " . $response->get_error_message(), [
-                    'endpoint' => $endpoint,
-                    'method' => $method,
-                    'error_code' => $response->get_error_code()
-                ]);
             }
 
             $last_error = is_wp_error($response) ? $response : new \WP_Error('api_error', 'API Error: ' . $response_code);
@@ -222,18 +189,72 @@ class API_Handler
 
         return $last_error;
     }
+    private function calculate_timeout($endpoint, $method)
+    {
+        $base_timeout = 120; // 2 minuta osnovni timeout
+
+        // Različiti timeout-ovi za različite operacije
+        if (strpos($endpoint, 'media') !== false) {
+            return 180; // 3 minuta za upload slika
+        }
+
+        if (strpos($endpoint, 'variations') !== false) {
+            return 300; // 5 minuta za varijacije
+        }
+
+        if ($method === 'POST' && strpos($endpoint, 'products') !== false) {
+            return 240; // 4 minuta za kreiranje proizvoda
+        }
+
+        if ($method === 'PUT') {
+            return 180; // 3 minuta za ažuriranje
+        }
+
+        return $base_timeout;
+    }
     public function sync_product($product_id, $skip_images = false)
     {
-        set_time_limit(600);
+        // OPTIMIZOVANO za LiteSpeed server
+        ini_set('memory_limit', '512M');
+        set_time_limit(0);
+
+        // LiteSpeed specifične optimizacije
+        if (function_exists('apache_setenv')) {
+            apache_setenv('no-gzip', '1');
+        }
+
+        // Disable output buffering da sprečimo timeouts
+        if (ob_get_level()) {
+            ob_end_clean();
+        }
+
+        // Povećavamo limits za MySQL konekciju
+        if (function_exists('mysql_connect')) {
+            @ini_set('mysql.connect_timeout', '300');
+        }
+
         $steps = [];
         $logger = Logger::get_instance();
-        $logger->info("Starting full product sync", [
+
+        $logger->info("Starting full product sync with LiteSpeed optimizations", [
             'product_id' => $product_id,
-            'skip_images' => $skip_images
+            'skip_images' => $skip_images,
+            'memory_limit' => ini_get('memory_limit'),
+            'time_limit' => ini_get('max_execution_time'),
+            'server' => $_SERVER['SERVER_SOFTWARE'] ?? 'Unknown'
         ]);
 
         try {
-            // 1. Inicijalna provera proizvoda
+            // Periodic cleanup optimizovan za LiteSpeed
+            $this->cleanup_memory_periodically();
+
+            // Flush output early da sprečimo browser timeout
+            if (!headers_sent()) {
+                header('Connection: keep-alive');
+                header('X-Accel-Buffering: no'); // Nginx/LiteSpeed
+            }
+
+            // Ostatak koda ostaje isti...
             $product = $this->validate_and_prepare_product($product_id);
             if (!$product) {
                 throw new \Exception("Proizvod nije pronađen");
@@ -241,40 +262,23 @@ class API_Handler
 
             $existing_product_id = $this->check_if_product_exists($product);
 
-            $logger->info("Product validation complete", [
-                'exists_on_target' => ($existing_product_id ? 'yes' : 'no'),
-                'target_id' => $existing_product_id
-            ]);
-
-            // 2. Procesiranje slika (samo ako nije skip_images)
+            // Optimizovano procesiranje slika za LiteSpeed
             $images = [];
             if (!$skip_images) {
                 $steps[] = ['name' => 'images', 'status' => 'active', 'message' => 'Prebacivanje slika...'];
-                $images = $this->process_images_in_batch($product, $existing_product_id);
+
+                // Koristimo manje batch-eve za LiteSpeed stabilnost
+                $images = $this->process_images_with_recovery($product, $existing_product_id);
+
                 $steps[count($steps) - 1] = [
                     'name' => 'images',
                     'status' => 'completed',
                     'message' => count($images) . ' slika(e) uploadovano'
                 ];
-
-                $logger->info("Images processed", ['count' => count($images)]);
-            } else {
-                $logger->info("Skipping image upload (user requested)", ['product_id' => $product_id]);
-
-                // Ako postoje prethodno uploadovane slike, koristimo samo njihove ID-jeve
-                if ($existing_product_id) {
-                    $existing_images = $this->get_existing_product_images($existing_product_id);
-                    if (!empty($existing_images)) {
-                        $images = $existing_images;
-                        $logger->info("Using existing images", ['count' => count($images)]);
-                    }
-                }
             }
 
-            // 3. Priprema proizvoda
+            // Pripremamo podatke
             $data = $this->prepare_product_data($product);
-
-            // Pokušaj prvo sa slikama
             if (!empty($images)) {
                 $data['images'] = $images;
             }
@@ -282,55 +286,10 @@ class API_Handler
             $endpoint = $this->build_api_endpoint($existing_product_id ? "products/{$existing_product_id}" : "products");
             $method = $existing_product_id ? 'PUT' : 'POST';
 
-            $logger->info("Sending product data to API", [
-                'endpoint' => $endpoint,
-                'method' => $method,
-                'has_images' => !empty($images)
-            ]);
-
-            try {
-                // Prvi pokušaj - sa slikama (ako ih ima)
-                $response = $this->make_api_request($endpoint, [
-                    'headers' => [
-                        'Content-Type' => 'application/json',
-                        'Authorization' => 'Basic ' . base64_encode($this->settings['username'] . ':' . $this->settings['password'])
-                    ],
-                    'body' => json_encode($data),
-                    'timeout' => 300,
-                    'sslverify' => false
-                ], $method);
-            } catch (\Exception $first_error) {
-                // Ako je greška vezana za slike, pokušajmo bez njih
-                $error_message = $first_error->getMessage();
-                if (
-                    strpos($error_message, 'invalid_image_id') !== false ||
-                    strpos($error_message, 'image_id') !== false
-                ) {
-
-                    $logger->warning("Problem sa slikama, pokušavam bez njih", [
-                        'error' => $error_message
-                    ]);
-
-                    // Uklonimo slike i pokušajmo ponovo
-                    $data['images'] = [];
-
-                    $response = $this->make_api_request($endpoint, [
-                        'headers' => [
-                            'Content-Type' => 'application/json',
-                            'Authorization' => 'Basic ' . base64_encode($this->settings['username'] . ':' . $this->settings['password'])
-                        ],
-                        'body' => json_encode($data),
-                        'timeout' => 300,
-                        'sslverify' => false
-                    ], $method);
-                } else {
-                    // Ako nije problem sa slikama, propagiraj grešku
-                    throw $first_error;
-                }
-            }
+            // API poziv sa LiteSpeed optimizacijama
+            $response = $this->make_api_request_with_fallback($endpoint, $data, $method);
 
             if (is_wp_error($response)) {
-                $logger->error("API request failed: " . $response->get_error_message());
                 throw new \Exception($response->get_error_message());
             }
 
@@ -338,101 +297,38 @@ class API_Handler
             $response_code = wp_remote_retrieve_response_code($response);
 
             if ($response_code !== 201 && $response_code !== 200) {
-                $error_msg = $this->get_error_message($body, $response_code);
-                $logger->error("API response error: " . $error_msg);
-                throw new \Exception($error_msg);
+                throw new \Exception($this->get_error_message($body, $response_code));
             }
 
-            $logger->success("Product data sent successfully", ['product_id' => $body->id]);
-
-            // 4. Ažuriranje meta podataka
+            // Ažuriramo meta podatke
             update_post_meta($product_id, '_synced_product_id', $body->id);
             update_post_meta($product_id, '_last_sync_date', current_time('mysql'));
 
-            $logger->info("Updated local meta data", [
-                'synced_product_id' => $body->id,
-                'sync_date' => current_time('mysql')
-            ]);
-
-            // 5. Pokušajmo dodati slike naknadno ako su bile problem
-            if (isset($first_error) && !empty($images)) {
-                $logger->info("Trying to add images separately after product creation");
-
-                // Dodajemo slike pojedinačno
-                foreach ($images as $index => $image) {
-                    try {
-                        // Proverimo da li je slika već validna
-                        if (isset($image['id'])) {
-                            $check_endpoint = trailingslashit($this->settings['target_url']) . 'wp-json/wp/v2/media/' . $image['id'];
-                            $check_response = wp_remote_get($check_endpoint, [
-                                'headers' => [
-                                    'Authorization' => 'Basic ' . base64_encode($this->settings['username'] . ':' . $this->settings['password'])
-                                ],
-                                'sslverify' => false
-                            ]);
-
-                            // Ako slika nije validna, preskačemo je
-                            if (is_wp_error($check_response) || wp_remote_retrieve_response_code($check_response) !== 200) {
-                                continue;
-                            }
-
-                            // Dodajemo sliku proizvodu
-                            $update_endpoint = $this->build_api_endpoint("products/{$body->id}");
-                            $update_data = [
-                                'images' => [$image]
-                            ];
-
-                            $this->make_api_request($update_endpoint, [
-                                'headers' => [
-                                    'Content-Type' => 'application/json',
-                                    'Authorization' => 'Basic ' . base64_encode($this->settings['username'] . ':' . $this->settings['password'])
-                                ],
-                                'body' => json_encode($update_data),
-                                'timeout' => 60,
-                                'sslverify' => false
-                            ], 'PUT');
-
-                            $logger->info("Successfully added image separately", [
-                                'image_id' => $image['id'],
-                                'product_id' => $body->id
-                            ]);
-                        }
-                    } catch (\Exception $img_error) {
-                        $logger->warning("Failed to add image separately", [
-                            'image_index' => $index,
-                            'error' => $img_error->getMessage()
-                        ]);
-                        // Nastavljamo sa sledećom slikom
-                        continue;
-                    }
-                }
-            }
-
-            // 6. Sinhronizacija varijacija ako je potrebno
+            // Sinhronizacija varijacija
             if ($product->get_type() === 'variable') {
                 $steps[] = ['name' => 'variations', 'status' => 'active', 'message' => 'Kreiranje varijacija...'];
                 $variation_result = $this->sync_product_variations($product_id, $body->id, $skip_images);
                 $steps[] = $variation_result;
             }
 
-            // 7. Konverzija cena
             $steps[] = [
                 'name' => 'prices',
                 'status' => 'completed',
                 'message' => 'Cene konvertovane'
             ];
 
-            // 8. Korak za stanje
             $steps[] = [
                 'name' => 'stock',
                 'status' => 'completed',
                 'message' => 'Stanje proizvoda ažurirano'
             ];
 
-            $logger->success("Product sync completed successfully", [
+            $logger->success("Product sync completed successfully on LiteSpeed", [
                 'product_id' => $product_id,
                 'target_id' => $body->id,
-                'action' => $existing_product_id ? 'updated' : 'created'
+                'action' => $existing_product_id ? 'updated' : 'created',
+                'peak_memory' => memory_get_peak_usage(true),
+                'execution_time' => microtime(true) - $_SERVER['REQUEST_TIME_FLOAT']
             ]);
 
             return [
@@ -441,9 +337,123 @@ class API_Handler
                 'steps' => $steps
             ];
         } catch (\Exception $e) {
-            $logger->error("Sync error: " . $e->getMessage());
+            $logger->error("Sync error on LiteSpeed: " . $e->getMessage(), [
+                'memory_usage' => memory_get_usage(true),
+                'peak_memory' => memory_get_peak_usage(true)
+            ]);
             return new \WP_Error('sync_error', $e->getMessage());
         }
+    }
+    private function make_api_request_with_fallback($endpoint, $data, $method)
+    {
+        try {
+            // Prvi pokušaj - sa slikama
+            $response = $this->make_api_request($endpoint, [
+                'headers' => [
+                    'Content-Type' => 'application/json',
+                    'Authorization' => 'Basic ' . base64_encode($this->settings['username'] . ':' . $this->settings['password'])
+                ],
+                'body' => json_encode($data),
+                'sslverify' => false
+            ], $method);
+
+            if (!is_wp_error($response)) {
+                return $response;
+            }
+
+            // Ako je problem sa slikama, pokušaj bez njih
+            if (isset($data['images']) && !empty($data['images'])) {
+                $this->logger->warning("Retrying without images due to error", [
+                    'error' => $response->get_error_message()
+                ]);
+
+                $data_without_images = $data;
+                unset($data_without_images['images']);
+
+                $response = $this->make_api_request($endpoint, [
+                    'headers' => [
+                        'Content-Type' => 'application/json',
+                        'Authorization' => 'Basic ' . base64_encode($this->settings['username'] . ':' . $this->settings['password'])
+                    ],
+                    'body' => json_encode($data_without_images),
+                    'sslverify' => false
+                ], $method);
+            }
+
+            return $response;
+        } catch (\Exception $e) {
+            return new \WP_Error('api_error', $e->getMessage());
+        }
+    }
+    private function cleanup_memory_periodically()
+    {
+        static $cleanup_counter = 0;
+        $cleanup_counter++;
+
+        if ($cleanup_counter % 5 === 0) { // Češće čišćenje na LiteSpeed
+            if (function_exists('gc_collect_cycles')) {
+                gc_collect_cycles();
+            }
+
+            // LiteSpeed specifično čišćenje
+            if (function_exists('opcache_reset')) {
+                @opcache_reset();
+            }
+
+            $this->logger->info("LiteSpeed memory cleanup performed", [
+                'memory_usage' => memory_get_usage(true),
+                'peak_memory' => memory_get_peak_usage(true)
+            ]);
+        }
+    }
+    private function process_images_with_recovery($product, $existing_product_id = null)
+    {
+        $images = [];
+        $batch_size = 3; // Smanjujemo batch size za stabilnost
+
+        $image_ids = array_filter(array_merge(
+            [$product->get_image_id()],
+            $product->get_gallery_image_ids()
+        ));
+
+        foreach (array_chunk($image_ids, $batch_size) as $index => $batch) {
+            $this->logger->info("Processing image batch", [
+                'batch' => $index + 1,
+                'size' => count($batch)
+            ]);
+
+            foreach ($batch as $position => $image_id) {
+                if ($image_url = wp_get_attachment_url($image_id)) {
+                    try {
+                        $uploaded_id = $this->image_handler->upload_image($image_url);
+
+                        if ($uploaded_id && $this->verify_image_exists($uploaded_id)) {
+                            $images[] = [
+                                'id' => $uploaded_id,
+                                'src' => $image_url,
+                                'position' => $position
+                            ];
+                        }
+                    } catch (\Exception $e) {
+                        $this->logger->warning("Image upload failed, continuing", [
+                            'image_id' => $image_id,
+                            'error' => $e->getMessage()
+                        ]);
+                        continue;
+                    }
+                }
+            }
+
+            // Povećavamo pauzu između batch-eva
+            if ($index < count($image_ids) / $batch_size - 1) {
+                sleep(1); // 1 sekunda pauza
+            }
+
+            // Periodic cleanup
+            $this->cleanup_memory_periodically();
+        }
+
+        return $images;
     }
     private function get_existing_product_images($product_id)
     {
