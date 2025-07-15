@@ -13,6 +13,7 @@ class Image_Handler
         $this->settings = $settings;
         $this->logger = Logger::get_instance();
     }
+    
     /**
      * NOVA METODA: Batch upload svih slika za sve varijacije odjednom
      */
@@ -21,7 +22,7 @@ class Image_Handler
         $all_urls = [];
         $variation_url_map = [];
 
-        $this->log("Batch priprema slika za sve varijacije", 'info', ['variations_count' => count($variations)]);
+    
 
         // Skupljamo sve URL-ove odjednom
         foreach ($variations as $variation_data) {
@@ -107,13 +108,6 @@ class Image_Handler
 
             $result[$variation_id] = $images;
         }
-
-        $this->log("Batch priprema završena", 'info', [
-            'total_variations' => count($variations),
-            'total_images' => count($all_urls),
-            'found_existing' => count($found_images),
-            'uploaded_new' => count($uploaded_images)
-        ]);
 
         return $result;
     }

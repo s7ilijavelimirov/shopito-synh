@@ -48,7 +48,14 @@ class Logger
         if (!$this->enabled) {
             return;
         }
+        if (is_array($level)) {
+            $context = $level;
+            $level = 'info';
+        }
 
+        if (!$this->enabled || empty($message)) {
+            return;
+        }
         $log_entry = [
             'timestamp' => current_time('mysql'),
             'level' => $level,
@@ -68,7 +75,7 @@ class Logger
         // Debugovanje u error_log samo ako je omogućeno logovanje
         $context_str = !empty($context) ? ' | ' . json_encode($context) : '';
         $emoji = $this->get_level_emoji($level);
-        error_log("{$emoji} Shopito Sync [{$level}]: {$message}{$context_str}");
+       \error_log("{$emoji} Shopito Sync [{$level}]: {$message}{$context_str}");
     }
 
     private function get_level_emoji($level)

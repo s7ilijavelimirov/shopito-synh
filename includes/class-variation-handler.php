@@ -16,7 +16,6 @@ class Variation_Handler
         $this->image_handler = new Image_Handler($settings);
         $this->logger = Logger::get_instance();
     }
-
     /**
      * Logging metoda koja proverava da li je logovanje omogućeno
      */
@@ -25,7 +24,7 @@ class Variation_Handler
         $this->logger->log($message, $level, $context);
     }
 
-    public function sync_variations($product_id, $target_product_id)
+    public function sync_variations($product_id, $target_product_id, $skip_images = false)
     {
         $this->log("Započeta optimizovana sinhronizacija varijacija", 'info', [
             'source' => $product_id,
@@ -61,7 +60,11 @@ class Variation_Handler
 
         // NOVA OPTIMIZACIJA: Batch processing slika za sve varijacije odjednom
         $this->log("Startuje batch priprema slika za sve varijacije");
-        $all_variation_images = $this->image_handler->batch_prepare_all_variation_images($source_variations, $target_product_id);
+        if (!$skip_images) {
+            $all_variation_images = $this->image_handler->batch_prepare_all_variation_images($source_variations, $target_product_id);
+        } else {
+            $all_variation_images = [];
+        }
         $this->log("Završena batch priprema slika", ['processed_variations' => count($all_variation_images)]);
 
         $matched_count = 0;
@@ -312,7 +315,7 @@ class Variation_Handler
                 'wp-json/wc/v3/products/' . $target_product_id . '/variations/generate'
         );
 
-        $this->log("Generisanje varijacija", [
+        $this->log("Generisanje varijacija", 'info', [
             'target_product_id' => $target_product_id,
             'endpoint' => $endpoint
         ]);
@@ -326,10 +329,10 @@ class Variation_Handler
         ]);
 
         if (is_wp_error($response)) {
-            $this->log("Greška pri generisanju varijacija", [
+            $this->log("Greška pri generisanju varijacija", 'error', [
                 'target_product_id' => $target_product_id,
                 'error' => $response->get_error_message()
-            ], 'error');
+            ]);
             return false;
         }
 
@@ -343,9 +346,9 @@ class Variation_Handler
             return false;
         }
 
-        $this->log("Varijacije uspešno generisane", [
+        $this->log("Varijacije uspešno generisane", 'success', [
             'target_product_id' => $target_product_id
-        ], 'success');
+        ]);
 
         return true;
     }

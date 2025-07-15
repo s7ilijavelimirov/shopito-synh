@@ -411,7 +411,7 @@ class API_Handler
             // 6. Sinhronizacija varijacija ako je potrebno
             if ($product->get_type() === 'variable') {
                 $steps[] = ['name' => 'variations', 'status' => 'active', 'message' => 'Kreiranje varijacija...'];
-                $variation_result = $this->sync_product_variations($product_id, $body->id);
+                $variation_result = $this->sync_product_variations($product_id, $body->id, $skip_images);
                 $steps[] = $variation_result;
             }
 
@@ -603,10 +603,10 @@ class API_Handler
         return add_query_arg($args, trailingslashit($this->settings['target_url']) . 'wp-json/wc/v3/' . $path);
     }
 
-    private function sync_product_variations($product_id, $target_product_id)
+    private function sync_product_variations($product_id, $target_product_id, $skip_images = false)
     {
         try {
-            $variation_result = $this->variation_handler->sync_variations($product_id, $target_product_id);
+            $variation_result = $this->variation_handler->sync_variations($product_id, $target_product_id, $skip_images);
 
             if ($variation_result === false) {
                 return [
