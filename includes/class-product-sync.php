@@ -128,6 +128,8 @@ class Product_Sync
 
     public function handle_stock_sync_request()
     {
+        wp_suspend_cache_addition(true);
+        remove_action('wp_ajax_heartbeat', 'wp_ajax_heartbeat');
         check_ajax_referer('shopito_sync_nonce', 'nonce');
 
         $product_id = isset($_POST['product_id']) ? intval($_POST['product_id']) : 0;
@@ -192,6 +194,8 @@ class Product_Sync
 
     public function handle_sync_request()
     {
+        wp_suspend_cache_addition(true);
+        remove_action('wp_ajax_heartbeat', 'wp_ajax_heartbeat');
         check_ajax_referer('shopito_sync_nonce', 'nonce');
 
         $product_id = isset($_POST['product_id']) ? intval($_POST['product_id']) : 0;

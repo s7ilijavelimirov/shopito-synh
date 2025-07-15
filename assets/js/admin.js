@@ -1,6 +1,49 @@
 jQuery(document).ready(function ($) {
+    let syncInProgress = false;
+
+    // DODANO: Heartbeat funkcije
+    function disableHeartbeat() {
+        if (typeof wp !== 'undefined' && wp.heartbeat) {
+            wp.heartbeat.suspend();
+            console.log('Heartbeat disabled during sync');
+        }
+    }
+
+    function enableHeartbeat() {
+        if (typeof wp !== 'undefined' && wp.heartbeat) {
+            wp.heartbeat.resume();
+            console.log('Heartbeat enabled after sync');
+        }
+    }
+
+    function showSyncNotice() {
+        $('.post-lock-dialog, .autosave-info, #local-storage-notice').remove();
+
+        if (!$('#sync-notice').length) {
+            $('body').prepend(`
+                <div id="sync-notice" style="
+                    position: fixed; 
+                    top: 32px; 
+                    left: 0; 
+                    right: 0; 
+                    background: #0073aa; 
+                    color: white; 
+                    padding: 12px; 
+                    text-align: center; 
+                    z-index: 999999;
+                    font-weight: bold;
+                ">
+                    🔄 Sinhronizacija u toku - molimo sačekajte...
+                </div>
+            `);
+        }
+    }
+
+    function hideSyncNotice() {
+        $('#sync-notice').fadeOut().remove();
+    }
+
     function clearLocalStorageBackup() {
-        // Ukloni WordPress autosave iz localStorage
         if (typeof Storage !== 'undefined') {
             const postId = $('#post_ID').val();
             if (postId) {
@@ -8,10 +51,9 @@ jQuery(document).ready(function ($) {
                 localStorage.removeItem('wp-autosave-' + postId);
             }
         }
-
-        // Sakrij notice ako se već prikazuje
         $('#local-storage-notice').remove();
     }
+
     function disableAutosave() {
         if (typeof wp !== 'undefined' && wp.autosave) {
             wp.autosave.server.suspend();
@@ -31,66 +73,6 @@ jQuery(document).ready(function ($) {
         const messageClass = type === 'error' ? 'error' : 'success';
         container.html(`<div class="sync-message ${messageClass}">${message}</div>`);
     };
-    const createProgressBar = (container, steps) => {
-        // Kreiraj kontejner za progress bar
-        const progressWrapper = $('<div class="sync-progress-bar-wrapper"></div>');
-        const progressBar = $('<div class="sync-progress-bar"></div>');
-        const progressText = $('<div class="sync-progress-text">0%</div>');
-        const statusText = $('<div class="sync-status-text">Pripremanje...</div>');
-
-        progressWrapper.append(progressBar);
-        progressWrapper.append(progressText);
-        progressWrapper.append(statusText);
-        container.prepend(progressWrapper);
-
-        return {
-            update: (completedSteps, message) => {
-                const percentage = Math.min(Math.floor((completedSteps / steps) * 100), 100);
-                progressBar.css('width', percentage + '%');
-                progressText.text(percentage + '%');
-
-                if (message) {
-                    statusText.text(message);
-                }
-
-                // Dodaj klasu za animaciju kad se završi
-                if (percentage >= 100) {
-                    progressBar.addClass('completed');
-                }
-            }
-        };
-    };
-    function getStatusMessage(response, type) {
-        if (response.success) {
-            if (type === 'rest') {
-                return {
-                    title: 'WooCommerce REST API Test',
-                    message: 'REST API (Consumer Keys) konekcija je uspešna! Sinhronizacija proizvoda će raditi.',
-                    class: 'notice-success'
-                };
-            } else {
-                return {
-                    title: 'WordPress Basic Auth Test',
-                    message: 'Basic Auth konekcija je uspešna! Upload slika će raditi.',
-                    class: 'notice-success'
-                };
-            }
-        } else {
-            if (type === 'rest') {
-                return {
-                    title: 'WooCommerce REST API Test',
-                    message: 'REST API konekcija nije uspela. Proverite Consumer Key i Secret.',
-                    class: 'notice-error'
-                };
-            } else {
-                return {
-                    title: 'WordPress Basic Auth Test',
-                    message: 'Basic Auth konekcija nije uspela. Proverite Application Password.',
-                    class: 'notice-error'
-                };
-            }
-        }
-    }
 
     const updateSyncProgress = (step, status = 'active', message = '') => {
         const container = $('.sync-progress-container');
@@ -99,11 +81,6 @@ jQuery(document).ready(function ($) {
         if (!stepElement.length) {
             console.log(`Step element "${step}" not found`);
             return;
-        }
-
-        if (!stepElement.find('.step-text').data('original-text')) {
-            stepElement.find('.step-text').data('original-text',
-                stepElement.find('.step-text').text());
         }
 
         stepElement.removeClass('active completed error');
@@ -142,7 +119,39 @@ jQuery(document).ready(function ($) {
         showMessage(statusDiv, errorMessage, 'error');
     };
 
-    // Funkcija za testiranje konekcije
+    // Test konekcije (ostaje isto)
+    function getStatusMessage(response, type) {
+        if (response.success) {
+            if (type === 'rest') {
+                return {
+                    title: 'WooCommerce REST API Test',
+                    message: 'REST API (Consumer Keys) konekcija je uspešna! Sinhronizacija proizvoda će raditi.',
+                    class: 'notice-success'
+                };
+            } else {
+                return {
+                    title: 'WordPress Basic Auth Test',
+                    message: 'Basic Auth konekcija je uspešna! Upload slika će raditi.',
+                    class: 'notice-success'
+                };
+            }
+        } else {
+            if (type === 'rest') {
+                return {
+                    title: 'WooCommerce REST API Test',
+                    message: 'REST API konekcija nije uspela. Proverite Consumer Key i Secret.',
+                    class: 'notice-error'
+                };
+            } else {
+                return {
+                    title: 'WordPress Basic Auth Test',
+                    message: 'Basic Auth konekcija nije uspela. Proverite Application Password.',
+                    class: 'notice-error'
+                };
+            }
+        }
+    }
+
     function testConnection(type) {
         const resultDiv = $('#connection-result');
         const spinner = $('.spinner');
@@ -163,30 +172,24 @@ jQuery(document).ready(function ($) {
             success: function (response) {
                 const status = getStatusMessage(response, type);
                 let html = '<div style="margin-top: 20px; padding: 15px; background: #f8f8f8; border: 1px solid #ddd;">';
-
-                // Naslov i glavni status
                 html += `<h3>${status.title}</h3>`;
                 html += `<div class="notice ${status.class}"><p>${status.message}</p></div>`;
 
-                // Detalji
                 if (response.data && response.data.debug_info) {
                     html += '<div class="debug-section" style="margin-top: 15px;">';
                     html += '<h4>Tehnički detalji:</h4>';
                     html += '<dl style="margin-left: 20px;">';
 
-                    // Endpoint - proveravamo da li postoji
                     if (response.data.debug_info.endpoint) {
                         html += `<dt style="font-weight: bold;">Test URL:</dt>`;
                         html += `<dd style="margin-bottom: 10px;">${response.data.debug_info.endpoint}</dd>`;
                     }
 
-                    // Auth Type - proveravamo da li postoji
                     if (response.data.debug_info.auth_type) {
                         html += `<dt style="font-weight: bold;">Metoda autentifikacije:</dt>`;
                         html += `<dd style="margin-bottom: 10px;">${response.data.debug_info.auth_type}</dd>`;
                     }
 
-                    // Response Code - proveravamo da li postoji
                     if (response.data.debug_info.response_code) {
                         html += `<dt style="font-weight: bold;">Response Code:</dt>`;
                         html += `<dd style="margin-bottom: 10px;">`;
@@ -195,7 +198,6 @@ jQuery(document).ready(function ($) {
                         html += `${response.data.debug_info.response_code}</span></dd>`;
                     }
 
-                    // Response Body - proveravamo da li postoji
                     if (response.data.debug_info.response_body) {
                         html += `<dt style="font-weight: bold;">Server Response:</dt>`;
                         html += `<dd><pre style="background: #fff; padding: 10px; margin: 10px 0; max-height: 200px; overflow: auto;">`;
@@ -208,9 +210,6 @@ jQuery(document).ready(function ($) {
 
                 html += '</div>';
                 resultDiv.html(html);
-
-                // Dodajemo console.log za debugiranje
-                console.log('Response from server:', response);
             },
             error: function (xhr, status, error) {
                 resultDiv.html(
@@ -227,7 +226,6 @@ jQuery(document).ready(function ($) {
         });
     }
 
-    // Event handleri za test dugmad
     $('#test-rest-api').on('click', function () {
         testConnection('rest');
     });
@@ -236,11 +234,10 @@ jQuery(document).ready(function ($) {
         testConnection('user');
     });
 
-    // Sinhronizacija stanja proizvoda
+    // OPTIMIZOVANA sinhronizacija stanja
     $('.shopito-sync-stock').on('click', function (e) {
         e.preventDefault();
-        disableAutosave();
-    
+
         const button = $(this);
         const productId = button.data('product-id');
         const isVariable = button.data('is-variable') === 'true';
@@ -248,31 +245,31 @@ jQuery(document).ready(function ($) {
         const spinnerDiv = button.find('.spinner');
         const progressContainer = $('.sync-progress-container');
 
-        // Reset UI
+        // KLJUČNO: Onemogući WordPress konekcije
+        disableAutosave();
+        disableHeartbeat();
+        showSyncNotice();
+
         button.prop('disabled', true);
         spinnerDiv.addClass('is-active');
         progressContainer.show();
         statusDiv.html('');
 
-        // Reset steps and hide all
+        // Reset i prikaži relevantne korake
         $('.sync-step').removeClass('active completed error').hide();
-        $('.step-status').removeClass('success error');
-
-        // Prikazujemo samo korake relevantne za sinhronizaciju stanja
         $('.sync-step[data-step="stock"]').show();
 
-        // Za varijabilne proizvode, prikazujemo poseban korak za varijacije
         if (isVariable) {
             $('.sync-step[data-step="variations"]').show();
             updateSyncProgress('variations', 'active', 'Ažuriranje stanja varijacija...');
         }
 
-        // Inicijalno stanje - koristimo stock korak
         updateSyncProgress('stock', 'active', 'Ažuriranje stanja proizvoda...');
 
         $.ajax({
             url: shopitoSync.ajax_url,
             type: 'POST',
+            timeout: 300000, // 5 minuta
             data: {
                 action: 'sync_stock_to_ba',
                 nonce: shopitoSync.nonce,
@@ -281,29 +278,21 @@ jQuery(document).ready(function ($) {
             success: function (response) {
                 if (response.success) {
                     clearLocalStorageBackup();
-                    // Procesuiramo korake iz odgovora
+
                     if (response.data.steps && response.data.steps.length > 0) {
                         response.data.steps.forEach(step => {
-                            // Prikažemo samo korake za stock i variations (za varijabilne proizvode)
                             if (step.name === 'stock' || (isVariable && step.name === 'variations')) {
-                                const stepElement = $(`.sync-step[data-step="${step.name}"]`);
-                                if (stepElement.length) {
-                                    stepElement.show();
-                                    updateSyncProgress(step.name, step.status, step.message);
-                                }
+                                updateSyncProgress(step.name, step.status, step.message);
                             }
                         });
                     }
 
-                    // Uvek ažuriramo stock korak na kraju ako nije već ažuriran
                     if (!$('.sync-step[data-step="stock"]').hasClass('completed')) {
                         updateSyncProgress('stock', 'completed', 'Stanje proizvoda ažurirano');
                     }
 
                     showMessage(statusDiv, response.data.message, 'success');
-                    setTimeout(() => {
-                        location.reload();
-                    }, 1000);
+                    setTimeout(() => location.reload(), 1500);
                 } else {
                     handleAjaxError(response.data || 'Nepoznata greška', statusDiv);
                 }
@@ -314,115 +303,91 @@ jQuery(document).ready(function ($) {
             complete: function () {
                 button.prop('disabled', false);
                 spinnerDiv.removeClass('is-active');
+
                 enableAutosave();
-            
+                setTimeout(() => {
+                    enableHeartbeat();
+                    hideSyncNotice();
+                }, 1000);
             }
         });
     });
 
-    // Puna sinhronizacija proizvoda
+    // OPTIMIZOVANA puna sinhronizacija
     $('.shopito-sync-now').on('click', function (e) {
         e.preventDefault();
-        disableAutosave();
-     
+
         const button = $(this);
         const productId = button.data('product-id');
         const statusDiv = button.siblings('.sync-status');
         const spinnerDiv = button.find('.spinner');
         const progressContainer = $('.sync-progress-container');
-        const skipImages = $('#skip-images').is(':checked'); // Dodati ovu liniju
+        const skipImages = $('#skip-images').is(':checked');
 
-        // Reset UI
+        // KLJUČNO: Onemogući WordPress konekcije
+        disableAutosave();
+        disableHeartbeat();
+        showSyncNotice();
+
         button.prop('disabled', true);
         spinnerDiv.addClass('is-active');
         progressContainer.show();
         statusDiv.html('');
 
-        const isVariable = button.data('is-variable') === 'true';
-        const totalSteps = isVariable ? 20 : 10; // Povećaj broj koraka
-        const progressIndicator = createProgressBar(progressContainer, totalSteps);
-        let completedSteps = 0;
-        // Dodajemo trenutni update
-        const updateProgress = () => {
-            completedSteps++;
-            progressIndicator.update(completedSteps, "Sinhronizacija u toku...");
-        };
-
-        // Inicijalizacija: prvi korak
-        updateProgress();
-
-        // Dodaj timer za periodično ažuriranje (da korisnik vidi da se nešto dešava)
-        const progressTimer = setInterval(function () {
-            // Povećaj progress malo po malo do 90% (da ne dođe do 100% pre kraja)
-            if (completedSteps < totalSteps * 0.9) {
-                completedSteps++;
-                progressIndicator.update(completedSteps, "Sinhronizacija u toku...");
-            }
-        }, 3000); // Svake 3 sekunde
-        // Reset steps
-        $('.sync-step').removeClass('active completed error');
-        $('.step-status').removeClass('success error');
-
-        // Prikazujemo sve korake za punu sinhronizaciju
-        $('.sync-step').show();
+        // Prikaži sve korake
+        $('.sync-step').removeClass('active completed error').show();
 
         $.ajax({
             url: shopitoSync.ajax_url,
             type: 'POST',
+            timeout: 600000, // 10 minuta
             data: {
                 action: 'sync_to_ba',
                 nonce: shopitoSync.nonce,
                 product_id: productId,
-                skip_images: skipImages // Dodati ovaj parametar
+                skip_images: skipImages
             },
             success: function (response) {
-                clearInterval(progressTimer);
-
-                progressIndicator.update(totalSteps, "Sinhronizacija završena!");
                 if (response.success) {
                     clearLocalStorageBackup();
-                    progressIndicator.update(totalSteps);
-                    // Update progress steps
+
                     if (response.data.steps) {
                         response.data.steps.forEach(step => {
                             updateSyncProgress(step.name, step.status, step.message);
-                            if (step.status === 'completed') {
-                                completedSteps++;
-                                progressIndicator.update(completedSteps);
-                            }
                         });
                     }
 
-                    // Osiguravamo da je korak za stanje vidljiv i označen kao završen
-                    if (!$('.sync-step[data-step="stock"]').hasClass('completed')) {
-                        updateSyncProgress('stock', 'completed', 'Stanje proizvoda ažurirano');
-                    }
+                    // Dodaj default steps ako nisu definisani
+                    updateSyncProgress('product', 'completed', 'Proizvod kreiran/ažuriran');
+                    updateSyncProgress('prices', 'completed', 'Cene konvertovane');
+                    updateSyncProgress('stock', 'completed', 'Stanje ažurirano');
 
                     showMessage(statusDiv, response.data.message, 'success');
-                    setTimeout(() => {
-                        location.reload();
-                    }, 1000);
+                    setTimeout(() => location.reload(), 1500);
                 } else {
                     handleAjaxError(response.data || 'Nepoznata greška', statusDiv);
                 }
             },
             error: function (xhr, status, error) {
-                clearInterval(progressTimer);
                 handleAjaxError(xhr, statusDiv);
             },
             complete: function () {
                 button.prop('disabled', false);
                 spinnerDiv.removeClass('is-active');
+
                 enableAutosave();
-            
+                setTimeout(() => {
+                    enableHeartbeat();
+                    hideSyncNotice();
+                }, 1000);
             }
         });
     });
 
-    // Brisanje logova na stranici logova
+    // Clear logs
     $('#clear-logs').on('click', function () {
         if (confirm('Da li ste sigurni da želite da obrišete sve logove?')) {
-            var nonce = $(this).data('nonce');
+            const nonce = $(this).data('nonce');
 
             $.ajax({
                 url: shopitoSync.ajax_url,
@@ -430,9 +395,6 @@ jQuery(document).ready(function ($) {
                 data: {
                     action: 'clear_shopito_logs',
                     nonce: nonce
-                },
-                beforeSend: function () {
-                    $('#clear-logs').prop('disabled', true);
                 },
                 success: function (response) {
                     if (response.success) {
@@ -443,11 +405,15 @@ jQuery(document).ready(function ($) {
                 },
                 error: function () {
                     alert('Došlo je do greške prilikom brisanja logova.');
-                },
-                complete: function () {
-                    $('#clear-logs').prop('disabled', false);
                 }
             });
+        }
+    });
+
+    // Prevent page leave tokom sync-a
+    $(window).on('beforeunload', function () {
+        if (syncInProgress) {
+            return 'Sinhronizacija je u toku. Da li ste sigurni da želite da napustite stranicu?';
         }
     });
 });
